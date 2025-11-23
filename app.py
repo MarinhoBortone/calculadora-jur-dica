@@ -8,10 +8,10 @@ from fpdf import FPDF
 import io
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Auditável", layout="wide")
+st.set_page_config(page_title="CalcJus Pro Auditável", layout="wide")
 
-st.title("⚖️ CalcJus PRO - Relatórios Periciais Auditáveis")
-st.markdown("Cálculos Judiciais com **Memória de Cálculo, Fórmulas e Fontes Oficiais**.")
+st.title("⚖️ CalcJus PRO - Relatórios Periciais")
+st.markdown("Cálculos Judiciais com **Memória de Cálculo Auditável** (Fatores Explícitos).")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600)
@@ -35,14 +35,12 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
 # --- CLASSE PDF PROFISSIONAL ---
 class PDF(FPDF):
     def header(self):
-        # Cabeçalho em todas as páginas
         self.set_font('Arial', 'B', 8)
         self.cell(0, 5, 'CalcJus PRO - Sistema de Cálculos Judiciais', 0, 1, 'R')
-        self.line(10, 15, 287, 15) # Linha em paisagem
+        self.line(10, 15, 287, 15) 
         self.ln(5)
 
     def footer(self):
-        # Rodapé com numeração e nota
         self.set_y(-15)
         self.set_font('Arial', 'I', 7)
         self.cell(0, 5, f'Página {self.page_no()}/{{nb}} | Documento gerado eletronicamente', 0, 0, 'C')
@@ -53,7 +51,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     pdf.alias_nb_pages()
     pdf.add_page()
     
-    # --- 1. IDENTIFICAÇÃO DO CÁLCULO ---
+    # --- 1. IDENTIFICAÇÃO ---
     pdf.set_font("Arial", "B", 16)
     pdf.cell(0, 10, "DEMONSTRATIVO DE CÁLCULO JUDICIAL", ln=True, align="C")
     pdf.ln(5)
@@ -61,7 +59,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Arial", "", 10)
     
-    # Bloco de Metodologia (O que a IA pediu)
+    # Metodologia
     pdf.cell(0, 8, " 1. PARÂMETROS E METODOLOGIA APLICADA", ln=True, fill=True)
     pdf.ln(2)
     
@@ -78,29 +76,20 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         f"FÓRMULA PADRÃO: Valor Atualizado = Valor Original x Fator Acumulado do Índice.\n"
         f"FÓRMULA JUROS: Valor dos Juros = Valor Atualizado x (Taxa% x Dias/30)."
     )
-    pdf.multicell(0, 5, texto_metodologia)
+    # CORREÇÃO DO ERRO AQUI: multi_cell em vez de multicell
+    pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
 
-    # --- 2. TABELAS DE CÁLCULO ---
+    # --- 2. TABELAS ---
     
-    # BLOCO INDENIZAÇÃO
+    # INDENIZAÇÃO
     if totais['indenizacao'] > 0:
         pdf.set_font("Arial", "B", 11)
         pdf.set_fill_color(200, 220, 255)
         pdf.cell(0, 8, " 2. INDENIZAÇÃO / LUCROS CESSANTES", ln=True, fill=True)
         
-        # Cabeçalho Auditável
         pdf.set_font("Arial", "B", 8)
-        cols = [
-            ("Vencimento", 25), 
-            ("Valor Orig.", 25), 
-            (f"Fator {indice_nome}", 30), # Mostra qual índice é
-            ("Valor Atual.", 25), 
-            ("Juros (Período)", 45), # Explica o período
-            ("Fator SELIC", 25), 
-            ("TOTAL", 30)
-        ]
-        
+        cols = [("Vencimento", 25), ("Valor Orig.", 30), (f"Fator {indice_nome}", 30), ("Valor Atual.", 25), ("Juros (Período)", 45), ("Fator SELIC", 25), ("TOTAL", 30)]
         for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
         pdf.ln()
         
@@ -108,34 +97,27 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         for index, row in dados_ind.iterrows():
             venc = str(row['Vencimento'])
             orig = str(row['Valor Orig.'])
-            
-            # Colunas Dinâmicas
             f_cm = str(row.get('Audit Fator CM', row.get('Fator F1', '-')))
             v_corr = str(row.get('V. Corrigido', row.get('V. Fase 1', '-')))
-            
-            # Auditoria de Juros (Mostra Dias e Valor)
             j_detalhe = str(row.get('Audit Juros %', '-'))
-            # Se for texto longo, diminui fonte
-            if len(j_detalhe) > 20: pdf.set_font("Arial", "", 7)
-            
+            if len(j_detalhe) > 25: pdf.set_font("Arial", "", 7) # Ajuste fonte se texto longo
             f_selic = str(row.get('Audit Fator SELIC', '-'))
             total = str(row['TOTAL'])
 
             data_row = [venc, orig, f_cm, v_corr, j_detalhe, f_selic, total]
+            col_w = [25, 30, 30, 25, 45, 25, 30]
             
-            col_w = [25, 25, 30, 25, 45, 25, 30]
             for i, datum in enumerate(data_row):
-                align = 'L' if i == 4 else 'C' # Juros alinhado a esquerda
+                align = 'L' if i == 4 else 'C'
                 pdf.cell(col_w[i], 7, datum, 1, 0, align)
-            
-            pdf.set_font("Arial", "", 8) # Restaura fonte
+            pdf.set_font("Arial", "", 8)
             pdf.ln()
             
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 8, f"Subtotal Indenização: R$ {totais['indenizacao']:,.2f}", ln=True, align='R')
         pdf.ln(3)
 
-    # BLOCO HONORÁRIOS
+    # HONORÁRIOS
     if totais['honorarios'] > 0:
         pdf.set_font("Arial", "B", 11)
         pdf.set_fill_color(220, 240, 220)
@@ -147,17 +129,15 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, f"Subtotal Honorários: R$ {totais['honorarios']:,.2f}", ln=True, align='R')
         pdf.ln(3)
 
-    # BLOCO PENSÃO
+    # PENSÃO
     if totais['pensao'] > 0:
         pdf.set_font("Arial", "B", 11)
         pdf.set_fill_color(255, 220, 220)
         pdf.cell(0, 8, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", ln=True, fill=True)
-        
         pdf.set_font("Arial", "B", 8)
         headers_pen = [("Vencimento", 30), ("Original", 30), (f"Fator {indice_nome}", 30), ("Atualizado", 30), ("Pago", 30), ("Saldo Devido", 40)]
         for h, w in headers_pen: pdf.cell(w, 8, h, 1, 0, 'C')
         pdf.ln()
-        
         pdf.set_font("Arial", "", 8)
         for index, row in dados_pen.iterrows():
             pdf.cell(30, 8, str(row['Vencimento']), 1, 0, 'C')
@@ -167,7 +147,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
             pdf.cell(30, 8, str(row['Pago']), 1, 0, 'C')
             pdf.cell(40, 8, str(row['SALDO DEVEDOR']), 1, 0, 'C')
             pdf.ln()
-        
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 8, f"Subtotal Pensão: R$ {totais['pensao']:,.2f}", ln=True, align='R')
 
@@ -176,7 +155,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(0, 8, " RESUMO FINAL DA EXECUÇÃO", ln=True, fill=True)
     
-    # Linhas do Resumo
     pdf.set_font("Arial", "", 10)
     if config['multa_523']:
         pdf.cell(190, 8, "Multa Art. 523 CPC (10%)", 1)
@@ -186,12 +164,13 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, f"R$ {totais['hon_exec']:,.2f}", 1, 1, 'R')
     
     pdf.set_font("Arial", "B", 14)
+    pdf.set_text_color(0, 0, 150)
     pdf.cell(190, 12, "TOTAL GERAL A PAGAR", 1)
     pdf.cell(0, 12, f"R$ {totais['final']:,.2f}", 1, 1, 'R')
     
-    # Rodapé Fontes
     pdf.ln(5)
     pdf.set_font("Arial", "I", 8)
+    pdf.set_text_color(0, 0, 0)
     pdf.multi_cell(0, 5, "Fontes de Consulta: Sistema Gerenciador de Séries Temporais (SGS) do Banco Central do Brasil. Séries utilizadas: 188 (INPC), 189 (IGP-M), 192 (INCC), 4390 (SELIC).")
     
     return pdf.output(dest='S').encode('latin-1')
@@ -222,7 +201,7 @@ if 'regime_selecionado' not in st.session_state: st.session_state.regime_selecio
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "📊 PDF Final"])
 
-# ABA 1 - INDENIZAÇÃO COM AUDITORIA
+# ABA 1 - INDENIZAÇÃO
 with tab1:
     st.subheader("Cálculo de Indenização / Lucros Cessantes")
     c1, c2, c3 = st.columns(3)
@@ -267,14 +246,9 @@ with tab1:
              while t_date < fim_atraso:
                  prox = t_date + relativedelta(months=1)
                  venc = prox - timedelta(days=1)
-                 fator_pro_rata = 1.0
-                 if venc > fim_atraso:
-                     d_mes = (venc - t_date).days + 1
-                     d_pro = (fim_atraso - t_date).days + 1
-                     fator_pro_rata = d_pro / d_mes
-                     venc = fim_atraso
+                 if venc > fim_atraso: venc = fim_atraso
                  datas_vencimento.append(venc)
-                 valores_base.append(val_mensal * fator_pro_rata)
+                 valores_base.append(val_mensal) 
                  t_date = prox.replace(day=1)
         else:
             curr_date = inicio_atraso.replace(day=1)
@@ -309,7 +283,7 @@ with tab1:
             if "1. Padrão" in tipo_regime:
                 fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
                 v_fase1 = val_base * fator
-                audit_fator_cm = f"{fator:.6f}" # Só o número
+                audit_fator_cm = f"{fator:.5f}" 
                 
                 dt_j = data_citacao_ind if venc < data_citacao_ind else venc
                 dias = (data_calculo - dt_j).days
@@ -322,19 +296,19 @@ with tab1:
             elif "2. SELIC" in tipo_regime:
                 fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                 total_final = val_base * fator
-                audit_fator_selic = f"{fator:.6f}"
+                audit_fator_selic = f"{fator:.5f}"
                 v_fase1 = total_final 
             
             elif "3. Misto" in tipo_regime:
                 if venc >= data_corte_selic:
                     fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                     total_final = val_base * fator
-                    audit_fator_selic = f"{fator:.6f}"
+                    audit_fator_selic = f"{fator:.5f}"
                     v_fase1 = total_final
                 else:
                     fator_f1 = buscar_fator_bcb(codigo_indice_padrao, venc, data_corte_selic)
                     v_f1 = val_base * fator_f1
-                    audit_fator_cm = f"{fator_f1:.6f}"
+                    audit_fator_cm = f"{fator_f1:.5f}"
                     
                     dt_j = data_citacao_ind if venc < data_citacao_ind else venc
                     if dt_j < data_corte_selic:
@@ -349,7 +323,7 @@ with tab1:
                     
                     fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
                     total_final = base_selic * fator_s
-                    audit_fator_selic = f"{fator_s:.6f}"
+                    audit_fator_selic = f"{fator_s:.5f}"
                     v_fase1 = base_selic
 
             lista_ind.append({
@@ -378,7 +352,7 @@ with tab2:
     if st.button("Calcular Honorários"):
         f = buscar_fator_bcb(codigo_indice_padrao, d_h, data_calculo)
         tot = v_h * f
-        res = [{"Descrição": "Honorários", "Valor Orig.": f"R$ {v_h:.2f}", "Audit Fator": f"{f:.6f}", "Juros": "0,00", "TOTAL": f"R$ {tot:.2f}", "_num": tot}]
+        res = [{"Descrição": "Honorários", "Valor Orig.": f"R$ {v_h:.2f}", "Audit Fator": f"{f:.5f}", "Juros": "0,00", "TOTAL": f"R$ {tot:.2f}", "_num": tot}]
         st.session_state.df_honorarios = pd.DataFrame(res)
         st.session_state.total_honorarios = tot
         st.success(f"Total: R$ {tot:.2f}")
@@ -417,7 +391,6 @@ with tab3:
                 juros = 0.0
                 dias = (data_calculo - venc).days
                 if dias > 0: juros = v_corr * (0.01/30 * dias)
-                
                 total_bruto = v_corr + juros
                 saldo_mes = total_bruto - v_pago
                 res_p.append({
@@ -429,7 +402,6 @@ with tab3:
                     "SALDO DEVEDOR": f"R$ {saldo_mes:,.2f}", 
                     "_num": saldo_mes
                 })
-                
             st.session_state.df_pensao_final = pd.DataFrame(res_p)
             st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
             st.success(f"Saldo: R$ {st.session_state.total_pensao:,.2f}")
