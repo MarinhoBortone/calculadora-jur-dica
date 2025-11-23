@@ -165,42 +165,49 @@ with tab2:
             st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), use_container_width=True)
 
 # ==============================================================================
-# ABA 3: PENSÃO ALIMENTÍCIA (NOVA FUNÇÃO)
+# ABA 3: PENSÃO ALIMENTÍCIA (ATUALIZADA COM GERADOR DE PLANILHA)
 # ==============================================================================
 with tab3:
-    st.subheader("👶 Cálculo de Pensão Alimentícia em Atraso")
-    st.caption("Gera automaticamente os meses devidos, aplica correção e juros desde cada vencimento.")
+    st.subheader("👶 Cálculo de Pensão Alimentícia em Atraso (Planilha)")
+    st.caption("Gera automaticamente as parcelas atrasadas entre as datas selecionadas.")
 
-    col_p1, col_p2, col_p3 = st.columns(3)
-    valor_pensao = col_p1.number_input("Valor da Pensão (R$)", value=1000.00, step=50.00)
-    dia_vencimento = col_p2.number_input("Dia do Vencimento (todo dia...)", value=10, min_value=1, max_value=31)
+    col_p1, col_p2 = st.columns(2)
+    valor_pensao = col_p1.number_input("Valor da Parcela Mensal (R$)", value=1000.00, step=50.00)
+    dia_vencimento = col_p2.number_input("Dia de Vencimento (Ex: todo dia 10)", value=10, min_value=1, max_value=31)
     
     st.write("---")
+    st.write("Defina o período das parcelas em atraso:")
     col_p4, col_p5 = st.columns(2)
-    inicio_pensao = col_p4.date_input("Data da 1ª Parcela não paga", value=date(2024, 1, 10))
-    fim_pensao = col_p5.date_input("Data da última parcela a cobrar", value=date.today())
+    inicio_pensao = col_p4.date_input("Data da 1ª Parcela NÃO Paga", value=date(2023, 1, 10))
+    fim_pensao = col_p5.date_input("Data da Última Parcela a Cobrar", value=date.today())
 
-    if st.button("Calcular Pensão Atrasada", type="primary"):
+    if st.button("Gerar Planilha de Pensão", type="primary"):
         lista_pensao = []
         
-        # Lógica para encontrar o primeiro vencimento válido
-        data_atual = inicio_pensao.replace(day=dia_vencimento)
+        # Ajusta a data inicial para o dia de vencimento correto
+        # Se o dia escolhido (ex: 10) for menor que o dia inicial, ajusta para o próximo mês
+        # Mas aqui vamos assumir que o usuário coloca a data aproximada e ajustamos o dia.
+        try:
+            data_atual = inicio_pensao.replace(day=dia_vencimento)
+        except ValueError: # Caso dia 31 em mês de 30 dias
+            data_atual = inicio_pensao.replace(day=28) 
+            
         if data_atual < inicio_pensao:
              data_atual = data_atual + relativedelta(months=1)
 
         progresso_p = st.progress(0, text="Calculando pensão mês a mês...")
-        meses_calculados = 0
         
         # Loop para gerar parcelas até a data final
         temp_dates = []
-        while data_atual <= fim_pensao:
-            temp_dates.append(data_atual)
-            data_atual = data_atual + relativedelta(months=1)
+        curr_date = data_atual
+        while curr_date <= fim_pensao:
+            temp_dates.append(curr_date)
+            curr_date = curr_date + relativedelta(months=1)
             
         for i, vencimento in enumerate(temp_dates):
             progresso_p.progress((i + 1) / len(temp_dates))
             
-            # 1. Correção Monetária (Desde o vencimento)
+            # 1. Correção Monetária (Desde o vencimento da parcela)
             fator_corr_p = buscar_fator_bcb(codigo_indice, vencimento, data_calculo)
             val_corr_p = valor_pensao * fator_corr_p
             
@@ -208,7 +215,7 @@ with tab3:
             dias_atraso_p = (data_calculo - vencimento).days
             val_juros_p = 0.0
             if dias_atraso_p > 0:
-                # Juros simples pro-rata
+                # Juros simples pro-rata (1% ao mês)
                 val_juros_p = val_corr_p * (0.01/30 * dias_atraso_p)
             
             total_parcela_p = val_corr_p + val_juros_p
@@ -233,7 +240,7 @@ with tab3:
             st.success(f"Total Pensão Alimentícia: R$ {st.session_state.total_pensao:,.2f}")
             st.dataframe(df_p.drop(columns=["_num"]), use_container_width=True, height=400)
         else:
-            st.warning("Nenhuma parcela encontrada no período selecionado.")
+            st.warning("Nenhuma parcela encontrada no período selecionado. Verifique as datas.")
 
 
 # ==============================================================================
