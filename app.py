@@ -89,15 +89,15 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, " 2. INDENIZAÇÃO / LUCROS CESSANTES", ln=True, fill=True)
         
         pdf.set_font("Arial", "B", 8)
-        # NOVA ESTRUTURA DE COLUNAS (COM TOTAL FASE 1)
+        # Colunas ajustadas para incluir Total Fase 1
         cols = [
             ("Vencimento", 25), 
             ("Valor Orig.", 25), 
-            ("Fator Correção", 25), 
+            ("Fator CM", 20), 
             ("V. Corrigido", 25), 
             ("Juros / Mora", 40), 
-            ("Total Fase 1", 30), # NOVA COLUNA
-            ("Fator SELIC", 25), 
+            ("Total Fase 1", 30), 
+            ("Fator SELIC", 20), 
             ("TOTAL FINAL", 30)
         ]
         for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
@@ -112,22 +112,14 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
             j_detalhe = str(row.get('Audit Juros %', '-'))
             if len(j_detalhe) > 25: pdf.set_font("Arial", "", 7)
             
-            # Calcular Total Fase 1 para exibir
-            try:
-                v_corr_float = float(v_corr.replace('R$ ', '').replace('.', '').replace(',', '.')) if 'R$' in v_corr else 0.0
-                # Extrair valor dos juros do texto (ex: "10% (R$ 50.00)")
-                j_val_str = j_detalhe.split('R$ ')[1].replace(')', '') if 'R$' in j_detalhe else "0"
-                j_val_float = float(j_val_str.replace('.', '').replace(',', '.'))
-                total_f1 = v_corr_float + j_val_float
-                total_f1_str = f"R$ {total_f1:,.2f}"
-            except:
-                total_f1_str = "-"
+            # AQUI ESTÁ A CORREÇÃO: Pega direto do DataFrame
+            total_f1_str = str(row.get('Total Fase 1', '-'))
 
             f_selic = str(row.get('Audit Fator SELIC', '-'))
             total = str(row['TOTAL'])
 
             data_row = [venc, orig, f_cm, v_corr, j_detalhe, total_f1_str, f_selic, total]
-            col_w = [25, 25, 25, 25, 40, 30, 25, 30]
+            col_w = [25, 25, 20, 25, 40, 30, 20, 30]
             
             for i, datum in enumerate(data_row):
                 align = 'L' if i == 4 else 'C'
@@ -156,6 +148,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.set_font("Arial", "B", 11)
         pdf.set_fill_color(255, 220, 220)
         pdf.cell(0, 8, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", ln=True, fill=True)
+        
         pdf.set_font("Arial", "B", 8)
         headers_pen = [("Vencimento", 30), ("Original", 30), (f"Fator {indice_nome}", 30), ("Atualizado", 30), ("Pago", 30), ("Saldo Devido", 40)]
         for h, w in headers_pen: pdf.cell(w, 8, h, 1, 0, 'C')
@@ -170,6 +163,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
             pdf.cell(30, 8, str(row['Pago']), 1, 0, 'C')
             pdf.cell(40, 8, str(row['SALDO DEVEDOR']), 1, 0, 'C')
             pdf.ln()
+        
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 8, f"Subtotal Pensão: R$ {totais['pensao']:,.2f}", ln=True, align='R')
 
@@ -295,7 +289,7 @@ with tab1:
                 datas_vencimento.append(fim_ef)
                 valores_base.append(val)
 
-        # CÁLCULO DETALHADO
+        # CÁLCULO
         for i, venc in enumerate(datas_vencimento):
             val_base = valores_base[i]
             progresso.progress((i + 1) / len(datas_vencimento))
@@ -303,6 +297,7 @@ with tab1:
             audit_fator_cm = "-"
             audit_juros_perc = "-"
             audit_fator_selic = "-"
+            v_base_selic_str = "-" # Valor que será impresso na coluna
             
             total_final = 0.0
             v_fase1 = 0.0
@@ -342,18 +337,18 @@ with tab1:
                         d_f1 = (data_corte_selic - dt_j).days
                         j_f1 = v_f1 * (0.01/30 * d_f1)
                         perc_j1 = (d_f1/30)
-                        # Simplificação visual do juros
-                        juros_val = j_f1 
-                        audit_juros_perc = f"R$ {juros_val:,.2f} ({d_f1}d)"
+                        audit_juros_perc = f"{perc_j1:.1f}% ({d_f1}d F1)"
                     else:
                         j_f1 = 0.0
                     
                     base_selic = v_f1 + j_f1
+                    # Armazena para a tabela
+                    v_base_selic_str = f"R$ {base_selic:,.2f}"
                     
                     fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
                     total_final = base_selic * fator_s
                     audit_fator_selic = f"{fator_s:.5f}"
-                    v_fase1 = base_selic # Valor base para SELIC
+                    v_fase1 = base_selic 
 
             lista_ind.append({
                 "Vencimento": venc.strftime("%d/%m/%Y"), 
@@ -362,6 +357,7 @@ with tab1:
                 "V. Corrigido": f"R$ {v_fase1:,.2f}" if v_fase1 > 0 else "-", 
                 "Audit Juros %": audit_juros_perc,
                 "Audit Fator SELIC": audit_fator_selic,
+                "Total Fase 1": v_base_selic_str, # COLUNA NOVA PREENCHIDA
                 "TOTAL": f"R$ {total_final:,.2f}", 
                 "_num": total_final
             })
