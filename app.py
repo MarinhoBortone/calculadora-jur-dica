@@ -74,8 +74,10 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         f"CRITÉRIO DE JUROS: 1% ao mês simples (Pro-Rata Die) ou SELIC conforme regime.\n"
         f"CONVENÇÃO DE TEMPO: Mês Civil (dias efetivos do calendário).\n"
         f"FÓRMULAS APLICADAS:\n"
-        f"  - Valor Atualizado = Valor Original x Fator Acumulado do Índice.\n"
-        f"  - Juros Moratórios = Valor Atualizado x (Taxa% / 30 x Dias de Atraso)."
+        f"  - Valor Corrigido = Valor Original x Fator Acumulado do Índice.\n"
+        f"  - Juros Moratórios = Valor Corrigido x (Taxa% / 30 x Dias de Atraso).\n"
+        f"  - Total Fase 1 (Base SELIC) = Valor Corrigido + Juros Moratórios.\n"
+        f"  - Total Final = Base SELIC x Fator SELIC Acumulado."
     )
     pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
@@ -89,15 +91,15 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, " 2. INDENIZAÇÃO / LUCROS CESSANTES", ln=True, fill=True)
         
         pdf.set_font("Arial", "B", 8)
-        # Colunas ajustadas para incluir Total Fase 1
+        # Colunas ajustadas
         cols = [
             ("Vencimento", 25), 
             ("Valor Orig.", 25), 
-            ("Fator CM", 20), 
+            ("Fator Correção", 25), 
             ("V. Corrigido", 25), 
             ("Juros / Mora", 40), 
             ("Total Fase 1", 30), 
-            ("Fator SELIC", 20), 
+            ("Fator SELIC", 25), 
             ("TOTAL FINAL", 30)
         ]
         for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
@@ -107,19 +109,22 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         for index, row in dados_ind.iterrows():
             venc = str(row['Vencimento'])
             orig = str(row['Valor Orig.'])
+            # Pega fator
             f_cm = str(row.get('Audit Fator CM', row.get('Fator F1', '-')))
-            v_corr = str(row.get('V. Corrigido', row.get('V. Fase 1', '-')))
+            # Pega Valor Corrigido PURO (sem juros)
+            v_corr = str(row.get('V. Corrigido Puro', row.get('V. Corrigido', '-')))
+            
             j_detalhe = str(row.get('Audit Juros %', '-'))
             if len(j_detalhe) > 25: pdf.set_font("Arial", "", 7)
             
-            # AQUI ESTÁ A CORREÇÃO: Pega direto do DataFrame
+            # Pega Total Fase 1 (Base SELIC)
             total_f1_str = str(row.get('Total Fase 1', '-'))
 
             f_selic = str(row.get('Audit Fator SELIC', '-'))
             total = str(row['TOTAL'])
 
             data_row = [venc, orig, f_cm, v_corr, j_detalhe, total_f1_str, f_selic, total]
-            col_w = [25, 25, 20, 25, 40, 30, 20, 30]
+            col_w = [25, 25, 25, 25, 40, 30, 25, 30]
             
             for i, datum in enumerate(data_row):
                 align = 'L' if i == 4 else 'C'
@@ -238,6 +243,7 @@ with tab1:
         [f"1. Padrão: {indice_padrao_nome} + Juros 1%", "2. SELIC Pura", "3. Misto: Correção/Juros até Data X -> SELIC depois"],
         horizontal=True
     )
+    st.session_state.regime_selecionado = tipo_regime
     
     data_corte_selic = None
     data_citacao_ind = None
@@ -297,14 +303,18 @@ with tab1:
             audit_fator_cm = "-"
             audit_juros_perc = "-"
             audit_fator_selic = "-"
-            v_base_selic_str = "-" # Valor que será impresso na coluna
+            v_base_selic_str = "-" 
             
             total_final = 0.0
             v_fase1 = 0.0
             
+            # Aqui guardaremos o valor corrigido PURO (sem juros) para exibição
+            v_corrigido_puro = 0.0 
+            
             if "1. Padrão" in tipo_regime:
                 fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
                 v_fase1 = val_base * fator
+                v_corrigido_puro = v_fase1 # No padrão, fase 1 é o total corrigido
                 audit_fator_cm = f"{fator:.5f}" 
                 
                 dt_j = data_citacao_ind if venc < data_citacao_ind else venc
@@ -320,31 +330,35 @@ with tab1:
                 total_final = val_base * fator
                 audit_fator_selic = f"{fator:.5f}"
                 v_fase1 = total_final 
+                v_corrigido_puro = total_final
             
             elif "3. Misto" in tipo_regime:
                 if venc >= data_corte_selic:
                     fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                     total_final = val_base * fator
                     audit_fator_selic = f"{fator:.5f}"
+                    v_corrigido_puro = total_final
                     v_fase1 = total_final
                 else:
+                    # Fase 1: Correção monetária
                     fator_f1 = buscar_fator_bcb(codigo_indice_padrao, venc, data_corte_selic)
-                    v_f1 = val_base * fator_f1
+                    v_corrigido_puro = val_base * fator_f1 # Valor corrigido (sem juros)
                     audit_fator_cm = f"{fator_f1:.5f}"
                     
+                    # Fase 1: Juros
                     dt_j = data_citacao_ind if venc < data_citacao_ind else venc
                     if dt_j < data_corte_selic:
                         d_f1 = (data_corte_selic - dt_j).days
-                        j_f1 = v_f1 * (0.01/30 * d_f1)
+                        j_f1 = v_corrigido_puro * (0.01/30 * d_f1)
                         perc_j1 = (d_f1/30)
-                        audit_juros_perc = f"{perc_j1:.1f}% ({d_f1}d F1)"
+                        audit_juros_perc = f"R$ {j_f1:,.2f} ({d_f1}d)"
                     else:
                         j_f1 = 0.0
                     
-                    base_selic = v_f1 + j_f1
-                    # Armazena para a tabela
+                    base_selic = v_corrigido_puro + j_f1
                     v_base_selic_str = f"R$ {base_selic:,.2f}"
                     
+                    # Fase 2: SELIC
                     fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
                     total_final = base_selic * fator_s
                     audit_fator_selic = f"{fator_s:.5f}"
@@ -354,10 +368,10 @@ with tab1:
                 "Vencimento": venc.strftime("%d/%m/%Y"), 
                 "Valor Orig.": f"R$ {val_base:,.2f}", 
                 "Audit Fator CM": audit_fator_cm,
-                "V. Corrigido": f"R$ {v_fase1:,.2f}" if v_fase1 > 0 else "-", 
+                "V. Corrigido Puro": f"R$ {v_corrigido_puro:,.2f}", # Valor para a coluna V. Corrigido
                 "Audit Juros %": audit_juros_perc,
                 "Audit Fator SELIC": audit_fator_selic,
-                "Total Fase 1": v_base_selic_str, # COLUNA NOVA PREENCHIDA
+                "Total Fase 1": v_base_selic_str, 
                 "TOTAL": f"R$ {total_final:,.2f}", 
                 "_num": total_final
             })
@@ -377,7 +391,7 @@ with tab2:
     if st.button("Calcular Honorários"):
         f = buscar_fator_bcb(codigo_indice_padrao, d_h, data_calculo)
         tot = v_h * f
-        res = [{"Descrição": "Honorários", "Valor Orig.": f"R$ {v_h:.2f}", "Audit Fator": f"{f:.5f}", "Juros": "0,00", "TOTAL": f"R$ {tot:.2f}", "_num": tot}]
+        res = [{"Descrição": "Honorários", "Valor Orig.": f"R$ {v_h:.2f}", "Audit Fator": f"{indice_padrao_nome} {f:.4f}", "TOTAL": f"R$ {tot:.2f}", "_num": tot}]
         st.session_state.df_honorarios = pd.DataFrame(res)
         st.session_state.total_honorarios = tot
         st.success(f"Total: R$ {tot:.2f}")
