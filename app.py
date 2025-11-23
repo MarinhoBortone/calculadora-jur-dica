@@ -65,7 +65,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
     indice_nome = config.get('indice_nome', '-')
-    regime_desc = config.get('regime_desc', '-') # Descrição dinâmica do regime
+    regime_desc = config.get('regime_desc', '-') 
     
     texto_metodologia = (
         f"DATA BASE DO CÁLCULO: {dt_calc}\n"
@@ -89,15 +89,16 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, " 2. INDENIZAÇÃO / LUCROS CESSANTES", ln=True, fill=True)
         
         pdf.set_font("Arial", "B", 8)
-        # Colunas para Auditoria Clara
+        # NOVA ESTRUTURA DE COLUNAS (COM TOTAL FASE 1)
         cols = [
             ("Vencimento", 25), 
             ("Valor Orig.", 25), 
             ("Fator Correção", 25), 
-            ("V. Corrigido", 30), 
-            ("Juros / Mora", 45), 
+            ("V. Corrigido", 25), 
+            ("Juros / Mora", 40), 
+            ("Total Fase 1", 30), # NOVA COLUNA
             ("Fator SELIC", 25), 
-            ("TOTAL", 30)
+            ("TOTAL FINAL", 30)
         ]
         for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
         pdf.ln()
@@ -106,16 +107,27 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         for index, row in dados_ind.iterrows():
             venc = str(row['Vencimento'])
             orig = str(row['Valor Orig.'])
-            # Pega fator, se misto pega Fator F1, se padrão pega Fator CM
             f_cm = str(row.get('Audit Fator CM', row.get('Fator F1', '-')))
             v_corr = str(row.get('V. Corrigido', row.get('V. Fase 1', '-')))
             j_detalhe = str(row.get('Audit Juros %', '-'))
-            if len(j_detalhe) > 30: pdf.set_font("Arial", "", 7)
+            if len(j_detalhe) > 25: pdf.set_font("Arial", "", 7)
+            
+            # Calcular Total Fase 1 para exibir
+            try:
+                v_corr_float = float(v_corr.replace('R$ ', '').replace('.', '').replace(',', '.')) if 'R$' in v_corr else 0.0
+                # Extrair valor dos juros do texto (ex: "10% (R$ 50.00)")
+                j_val_str = j_detalhe.split('R$ ')[1].replace(')', '') if 'R$' in j_detalhe else "0"
+                j_val_float = float(j_val_str.replace('.', '').replace(',', '.'))
+                total_f1 = v_corr_float + j_val_float
+                total_f1_str = f"R$ {total_f1:,.2f}"
+            except:
+                total_f1_str = "-"
+
             f_selic = str(row.get('Audit Fator SELIC', '-'))
             total = str(row['TOTAL'])
 
-            data_row = [venc, orig, f_cm, v_corr, j_detalhe, f_selic, total]
-            col_w = [25, 25, 25, 30, 45, 25, 30]
+            data_row = [venc, orig, f_cm, v_corr, j_detalhe, total_f1_str, f_selic, total]
+            col_w = [25, 25, 25, 25, 40, 30, 25, 30]
             
             for i, datum in enumerate(data_row):
                 align = 'L' if i == 4 else 'C'
@@ -196,7 +208,7 @@ codigo_indice_padrao = mapa_indices[indice_padrao_nome]
 cod_selic = 4390
 
 st.sidebar.divider()
-st.sidebar.header("2. Penalidades")
+st.sidebar.header("2. Penalidades (Execução)")
 aplicar_multa_523 = st.sidebar.checkbox("Aplicar Multa de 10% (Art. 523)?", value=False)
 aplicar_hon_523 = st.sidebar.checkbox("Aplicar Honorários de 10%?", value=False)
 
@@ -228,7 +240,6 @@ with tab1:
     
     st.markdown("---")
     st.write("**Regime de Atualização:**")
-    # Texto genérico no botão, mas vamos capturar a data para o PDF
     tipo_regime = st.radio("Selecione:", 
         [f"1. Padrão: {indice_padrao_nome} + Juros 1%", "2. SELIC Pura", "3. Misto: Correção/Juros até Data X -> SELIC depois"],
         horizontal=True
@@ -241,7 +252,6 @@ with tab1:
         c_mix1, c_mix2 = st.columns(2)
         data_citacao_ind = c_mix1.date_input("Data Citação (Início Juros Fase 1)", value=date(2024, 3, 1))
         data_corte_selic = c_mix2.date_input("Data Início SELIC (Corte)", value=date(2024, 12, 1))
-        # ATUALIZA O TEXTO DO REGIME PARA O PDF
         st.session_state.regime_desc = f"Misto ({indice_padrao_nome} + Juros 1% até {data_corte_selic.strftime('%d/%m/%Y')} -> SELIC acumulada)"
     elif "1. Padrão" in tipo_regime:
         data_citacao_ind = st.date_input("Data Citação (Início Juros)", value=date(2025, 2, 25))
@@ -254,6 +264,7 @@ with tab1:
         lista_ind = []
         progresso = st.progress(0, text="Buscando índices...")
         
+        # GERAÇÃO DE DATAS
         datas_vencimento = []
         valores_base = []
         
@@ -284,6 +295,7 @@ with tab1:
                 datas_vencimento.append(fim_ef)
                 valores_base.append(val)
 
+        # CÁLCULO DETALHADO
         for i, venc in enumerate(datas_vencimento):
             val_base = valores_base[i]
             progresso.progress((i + 1) / len(datas_vencimento))
@@ -330,7 +342,9 @@ with tab1:
                         d_f1 = (data_corte_selic - dt_j).days
                         j_f1 = v_f1 * (0.01/30 * d_f1)
                         perc_j1 = (d_f1/30)
-                        audit_juros_perc = f"{perc_j1:.1f}% ({d_f1}d F1)"
+                        # Simplificação visual do juros
+                        juros_val = j_f1 
+                        audit_juros_perc = f"R$ {juros_val:,.2f} ({d_f1}d)"
                     else:
                         j_f1 = 0.0
                     
@@ -339,7 +353,7 @@ with tab1:
                     fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
                     total_final = base_selic * fator_s
                     audit_fator_selic = f"{fator_s:.5f}"
-                    v_fase1 = base_selic
+                    v_fase1 = base_selic # Valor base para SELIC
 
             lista_ind.append({
                 "Vencimento": venc.strftime("%d/%m/%Y"), 
