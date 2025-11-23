@@ -8,15 +8,16 @@ from fpdf import FPDF
 import io
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro Multi", layout="wide")
+st.set_page_config(page_title="CalcJus Pro", layout="wide")
 
 st.title("⚖️ CalcJus PRO - Central de Cálculos Judiciais")
-st.markdown("Cálculos de **Indenizações**, **Honorários** e **Pensão Alimentícia** com opção de **SELIC**.")
+st.markdown("Cálculos de **Indenizações**, **Honorários** e **Pensão Alimentícia** com Relatório PDF e opção SELIC.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     if data_fim < data_inicio: return 1.0
+    
     d1 = data_inicio.strftime("%d/%m/%Y")
     d2 = data_fim.strftime("%d/%m/%Y")
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados?formato=json&dataInicial={d1}&dataFinal={d2}"
@@ -28,8 +29,8 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
             fator = 1.0
             for item in dados:
                 val = float(item['valor'])
-                # Se for SELIC (4390), a taxa diária/mensal soma 1 + taxa.
-                # Índices de preço (IGP/INPC) também.
+                # Se for SELIC (4390), a taxa é percentual. Se for índice, é variação.
+                # A matemática financeira básica é (1 + taxa/100) acumulado.
                 fator *= (1 + val/100)
             return fator
     except: pass
@@ -51,19 +52,23 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.set_fill_color(200, 220, 255)
         pdf.cell(0, 10, "1. Indenização Cível / Lucros Cessantes", ln=True, fill=True)
         pdf.set_font("Arial", "", 9)
-        pdf.cell(30, 8, "Vencimento", 1)
-        pdf.cell(30, 8, "Valor Orig.", 1)
-        pdf.cell(30, 8, "Índice/Fator", 1)
-        pdf.cell(30, 8, "V. Atualizado", 1)
-        pdf.cell(30, 8, "Juros", 1)
+        
+        # Cabeçalho
+        pdf.cell(25, 8, "Vencim.", 1)
+        pdf.cell(25, 8, "Valor Base", 1)
+        pdf.cell(35, 8, "Índice/Fator", 1) # Aumentei largura
+        pdf.cell(25, 8, "V. Atual.", 1)
+        pdf.cell(30, 8, "Juros/Mora", 1) # Aumentei largura
         pdf.cell(0, 8, "Total", 1, ln=True)
+        
         for index, row in dados_ind.iterrows():
-            pdf.cell(30, 8, str(row['Vencimento']), 1)
-            pdf.cell(30, 8, str(row['Valor Orig.']), 1)
-            pdf.cell(30, 8, str(row['Fator']), 1)
-            pdf.cell(30, 8, str(row['V. Corrigido']), 1)
+            pdf.cell(25, 8, str(row['Vencimento']), 1)
+            pdf.cell(25, 8, str(row['Valor Orig.']), 1)
+            pdf.cell(35, 8, str(row['Fator']), 1)
+            pdf.cell(25, 8, str(row['V. Corrigido']), 1)
             pdf.cell(30, 8, str(row['Juros (R$)']), 1)
             pdf.cell(0, 8, str(row['TOTAL']), 1, ln=True)
+        
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, f"Subtotal Indenização: R$ {totais['indenizacao']:,.2f}", ln=True, align='R')
         pdf.ln(5)
@@ -74,56 +79,76 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.set_fill_color(220, 255, 220)
         pdf.cell(0, 10, "2. Honorários de Sucumbência / Custas", ln=True, fill=True)
         pdf.set_font("Arial", "", 10)
-        pdf.cell(0, 10, f"Valor Calculado: R$ {totais['honorarios']:,.2f}", ln=True)
+        
+        for index, row in dados_hon.iterrows():
+             pdf.cell(0, 10, f"{row['Descrição']}: R$ {row['TOTAL']}", ln=True)
+
+        pdf.cell(0, 10, f"Subtotal Honorários: R$ {totais['honorarios']:,.2f}", ln=True, align='R')
         pdf.ln(5)
 
     # BLOCO PENSÃO
     if totais['pensao'] > 0:
         pdf.set_font("Arial", "B", 12)
         pdf.set_fill_color(255, 220, 220)
-        pdf.cell(0, 10, "3. Pensão Alimentícia", ln=True, fill=True)
+        pdf.cell(0, 10, "3. Pensão Alimentícia (Débitos)", ln=True, fill=True)
         pdf.set_font("Arial", "", 9)
+        
         pdf.cell(30, 8, "Vencimento", 1)
         pdf.cell(30, 8, "Devido Orig.", 1)
         pdf.cell(30, 8, "Pago", 1)
+        pdf.cell(30, 8, "Juros", 1)
         pdf.cell(0, 8, "Saldo Devedor", 1, ln=True)
+        
         for index, row in dados_pen.iterrows():
             pdf.cell(30, 8, str(row['Vencimento']), 1)
             pdf.cell(30, 8, str(row['Devido Orig.']), 1)
             pdf.cell(30, 8, str(row['Pago']), 1)
+            pdf.cell(30, 8, str(row['Juros']), 1)
             pdf.cell(0, 8, str(row['SALDO DEVEDOR']), 1, ln=True)
+            
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, f"Subtotal Pensão: R$ {totais['pensao']:,.2f}", ln=True, align='R')
         pdf.ln(5)
 
-    # TOTAL GERAL
+    # --- BLOCO TOTAL GERAL ---
     pdf.ln(5)
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 0, "", "T")
+    pdf.cell(0, 0, "", "T") # Linha separadora
     pdf.ln(5)
+    
     if config['multa_523']:
         pdf.cell(0, 8, f"Multa Art. 523 (10%): R$ {totais['multa']:,.2f}", ln=True, align='R')
     if config['hon_523']:
         pdf.cell(0, 8, f"Honorários Execução (10%): R$ {totais['hon_exec']:,.2f}", ln=True, align='R')
+        
     pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 15, f"TOTAL FINAL DA EXECUÇÃO: R$ {totais['final']:,.2f}", ln=True, align='R', border=1)
+    
     return pdf.output(dest='S').encode('latin-1')
 
 # --- MENU LATERAL ---
 st.sidebar.header("1. Parâmetros Gerais")
 data_calculo = st.sidebar.date_input("Data do Cálculo (Atualização)", value=date.today())
 
-# Lista padrão (SEM SELIC aqui, para evitar confusão)
-mapa_indices = {"INPC (IBGE)": 188, "IGP-M (FGV)": 189, "INCC-DI": 192, "IPCA-E": 10764, "IPCA": 433}
-indice_nome = st.sidebar.selectbox("Índice de Correção (Padrão)", list(mapa_indices.keys()))
-codigo_indice_padrao = mapa_indices[indice_nome]
+# Listas de Índices
+mapa_indices = {
+    "INPC (IBGE)": 188, 
+    "IGP-M (FGV)": 189, 
+    "INCC-DI": 192, 
+    "IPCA-E": 10764, 
+    "IPCA": 433, 
+    "Taxa SELIC (EC 113/21)": 4390
+}
+# Aqui escolhemos o índice PADRÃO. A opção SELIC para Juros será feita abaixo, caso a caso.
+indice_padrao_nome = st.sidebar.selectbox("Índice de Correção Padrão", list(mapa_indices.keys()))
+codigo_indice_padrao = mapa_indices[indice_padrao_nome]
 
 st.sidebar.divider()
 st.sidebar.header("2. Penalidades (Execução)")
 aplicar_multa_523 = st.sidebar.checkbox("Aplicar Multa de 10% (Art. 523)?", value=False)
 aplicar_hon_523 = st.sidebar.checkbox("Aplicar Honorários de 10%?", value=False)
 
-# Estado
+# --- ESTADO DA APLICAÇÃO (MEMÓRIA) ---
 if 'total_indenizacao' not in st.session_state: st.session_state.total_indenizacao = 0.0
 if 'total_honorarios' not in st.session_state: st.session_state.total_honorarios = 0.0
 if 'total_pensao' not in st.session_state: st.session_state.total_pensao = 0.0
@@ -134,7 +159,9 @@ if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final =
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏢 1. Indenização Cível", "⚖️ 2. Honorários", "👶 3. Pensão Alimentícia", "📊 4. RESUMO E PDF"])
 
-# ABA 1 - INDENIZAÇÃO
+# ==============================================================================
+# ABA 1: INDENIZAÇÃO CÍVEL
+# ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Lucros Cessantes")
     c1, c2, c3 = st.columns(3)
@@ -150,25 +177,27 @@ with tab1:
     c6, c7 = st.columns(2)
     metodo_calculo = c7.radio("Método de Contagem:", ["Ciclo Mensal", "Mês Civil (Pro-Rata)"], index=1)
     
-    # SELETOR DE REGIME DE JUROS (NOVO)
+    # --- SELETOR DE JUROS (AQUI ESTÁ A MUDANÇA) ---
     st.write("---")
-    st.write("**Regra de Atualização e Juros:**")
-    tipo_atualizacao = st.radio(
-        "Escolha o regime:",
-        [f"Padrão: Correção ({indice_nome}) + Juros de 1% a.m.", "Taxa SELIC (Substitui Correção e Juros)"],
+    st.write("**Regime de Atualização e Juros:**")
+    tipo_juros = st.radio(
+        "Escolha o critério:",
+        [f"Correção ({indice_padrao_nome}) + Juros de 1% a.m.", "Taxa SELIC (Substitui Correção e Juros)"],
         horizontal=True
     )
     
-    usar_selic = "Taxa SELIC" in tipo_atualizacao
+    usar_selic = "Taxa SELIC" in tipo_juros
     
+    data_citacao_ind = None
     if not usar_selic:
         data_citacao_ind = st.date_input("Data da Citação (Para início dos Juros de 1%)", value=date(2025, 2, 25))
     else:
-        st.info("ℹ️ Com a Taxa SELIC, a correção e os juros são unificados. O cálculo será feito usando a SELIC desde o vencimento ou citação conforme a regra.")
-        data_citacao_ind = st.date_input("Data da Citação (Início da SELIC se for a regra)", value=date(2025, 2, 25))
+        st.info("ℹ️ Com a Taxa SELIC, a correção e os juros são unificados em uma única taxa. Juros de 1% foram desativados.")
 
     if st.button("Calcular Indenização", type="primary"):
         lista_ind = []
+        
+        # Define qual código usar: O padrão escolhido ou a SELIC (4390)
         codigo_final = 4390 if usar_selic else codigo_indice_padrao
         
         if metodo_calculo == "Ciclo Mensal":
@@ -176,7 +205,6 @@ with tab1:
             while temp_date < fim_atraso:
                 prox_mes = temp_date + relativedelta(months=1)
                 data_vencimento = prox_mes - timedelta(days=1)
-                
                 fator_pro_rata = 1.0
                 if data_vencimento > fim_atraso:
                     dias_no_mes = (data_vencimento - temp_date).days + 1
@@ -186,12 +214,12 @@ with tab1:
                 
                 valor_base_mes = valor_mensal_cheio * fator_pro_rata
                 
-                # Se for SELIC, usamos ela como fator unico. Se for Padrão, usamos o indice + juros 1%
+                # Busca fator (SELIC ou Índice Padrão)
                 fator_att = buscar_fator_bcb(codigo_final, data_vencimento, data_calculo)
                 
                 if usar_selic:
                     val_corr = valor_base_mes * fator_att
-                    val_juros = 0.0 # SELIC já inclui tudo
+                    val_juros = 0.0
                     txt_juros = "Incluso (SELIC)"
                     txt_fator = f"SELIC {fator_att:.4f}"
                 else:
@@ -200,7 +228,7 @@ with tab1:
                     dias_juros = (data_calculo - data_inicio_juros).days
                     val_juros = val_corr * (0.01/30 * dias_juros) if dias_juros > 0 else 0.0
                     txt_juros = f"R$ {val_juros:,.2f}"
-                    txt_fator = f"{indice_nome} {fator_att:.4f}"
+                    txt_fator = f"{indice_padrao_nome} {fator_att:.4f}"
                 
                 lista_ind.append({"Vencimento": data_vencimento.strftime("%d/%m/%Y"), "Valor Orig.": f"R$ {valor_base_mes:,.2f}", "Fator": txt_fator, "V. Corrigido": f"R$ {val_corr:,.2f}", "Juros (R$)": txt_juros, "TOTAL": f"R$ {val_corr + val_juros:,.2f}", "_num": val_corr + val_juros})
                 temp_date = prox_mes.replace(day=1)
@@ -216,11 +244,14 @@ with tab1:
                 ultimo_dia_mes = mes_ref.replace(day=calendar.monthrange(mes_ref.year, mes_ref.month)[1])
                 inicio_efetivo = inicio_atraso if mes_ref.year == inicio_atraso.year and mes_ref.month == inicio_atraso.month else mes_ref
                 fim_efetivo = fim_atraso if mes_ref.year == fim_atraso.year and mes_ref.month == fim_atraso.month else ultimo_dia_mes
+                
                 dias_no_mes = calendar.monthrange(mes_ref.year, mes_ref.month)[1]
                 dias_corridos = (fim_efetivo - inicio_efetivo).days + 1
                 eh_mes_cheio = (inicio_efetivo.day == 1 and fim_efetivo.day == ultimo_dia_mes.day)
                 
-                valor_base_mes = valor_mensal_cheio if eh_mes_cheio else (valor_mensal_cheio / dias_no_mes) * dias_corridos
+                if eh_mes_cheio: valor_base_mes = valor_mensal_cheio
+                else: valor_base_mes = (valor_mensal_cheio / dias_no_mes) * dias_corridos
+                
                 data_vencimento = fim_efetivo
                 
                 fator_att = buscar_fator_bcb(codigo_final, data_vencimento, data_calculo)
@@ -236,7 +267,7 @@ with tab1:
                     dias_juros = (data_calculo - data_inicio_juros).days
                     val_juros = val_corr * (0.01/30 * dias_juros) if dias_juros > 0 else 0.0
                     txt_juros = f"R$ {val_juros:,.2f}"
-                    txt_fator = f"{indice_nome} {fator_att:.4f}"
+                    txt_fator = f"{indice_padrao_nome} {fator_att:.4f}"
                 
                 lista_ind.append({"Vencimento": data_vencimento.strftime("%d/%m/%Y"), "Valor Orig.": f"R$ {valor_base_mes:,.2f}", "Fator": txt_fator, "V. Corrigido": f"R$ {val_corr:,.2f}", "Juros (R$)": txt_juros, "TOTAL": f"R$ {val_corr + val_juros:,.2f}", "_num": val_corr + val_juros})
 
@@ -247,7 +278,9 @@ with tab1:
             st.success(f"Total Indenização: R$ {st.session_state.total_indenizacao:,.2f}")
             st.dataframe(df.drop(columns=["_num"]), use_container_width=True)
 
-# ABA 2 - HONORÁRIOS
+# ==============================================================================
+# ABA 2: HONORÁRIOS
+# ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
     col_h1, col_h2 = st.columns(2)
@@ -256,14 +289,15 @@ with tab2:
     data_base_corr = col_d1.date_input("Correção desde:", value=date(2024, 12, 3))
     data_base_juros = col_d2.date_input("Juros desde:", value=date(2025, 11, 10))
     
-    tipo_atualizacao_h = st.radio("Regime:", [f"Padrão ({indice_nome} + 1%)", "Taxa SELIC"], horizontal=True, key="rad_hon")
-    usar_selic_hon = "SELIC" in tipo_atualizacao_h
+    # Opção SELIC também para honorários
+    tipo_juros_h = st.radio("Regime:", [f"Padrão ({indice_padrao_nome} + 1%)", "Taxa SELIC"], key="reg_h")
+    usar_selic_h = "SELIC" in tipo_juros_h
     
     if st.button("Calcular Honorários"):
-        codigo_final_h = 4390 if usar_selic_hon else codigo_indice_padrao
-        fator_h = buscar_fator_bcb(codigo_final_h, data_base_corr, data_calculo)
+        cod_h = 4390 if usar_selic_h else codigo_indice_padrao
+        fator_h = buscar_fator_bcb(cod_h, data_base_corr, data_calculo)
         
-        if usar_selic_hon:
+        if usar_selic_h:
              val_h_corr = valor_honorarios * fator_h
              val_h_juros = 0.0
              txt_juros_h = "Incluso (SELIC)"
@@ -279,7 +313,9 @@ with tab2:
         st.session_state.total_honorarios = total_h
         st.success(f"Total Honorários: R$ {total_h:,.2f}")
 
-# ABA 3 - PENSÃO (Mantido padrão pois alimentos raramente usa SELIC, mas se quiser posso por)
+# ==============================================================================
+# ABA 3: PENSÃO ALIMENTÍCIA
+# ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     c_pen1, c_pen2 = st.columns(2)
@@ -288,6 +324,8 @@ with tab3:
     c_pen3, c_pen4 = st.columns(2)
     ini_pen = c_pen3.date_input("Data Início", value=date(2023, 1, 1))
     fim_pen = c_pen4.date_input("Data Fim", value=date.today())
+    
+    usar_juros_pen = st.checkbox("Aplicar Juros de Mora (1% a.m.)?", value=True, key="ck_juros_pen")
     
     if st.button("1. Gerar Tabela para Edição"):
         lista_datas = []
@@ -309,11 +347,13 @@ with tab3:
                 v_orig = row["Valor Devido (R$)"]
                 v_pago = row["Valor Pago (R$)"]
                 
-                # Pensão usa padrão (Índice + 1% a.m.)
                 fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
                 v_corr = v_orig * fator
-                dias = (data_calculo - venc).days
-                juros = v_corr * (0.01/30 * dias) if dias > 0 else 0.0
+                
+                juros = 0.0
+                if usar_juros_pen:
+                    dias = (data_calculo - venc).days
+                    juros = v_corr * (0.01/30 * dias) if dias > 0 else 0.0
                 
                 total_bruto = v_corr + juros
                 saldo_mes = total_bruto - v_pago
@@ -323,7 +363,9 @@ with tab3:
             st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
             st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
 
-# ABA 4 - RESUMO
+# ==============================================================================
+# ABA 4: RESUMO E PDF
+# ==============================================================================
 with tab4:
     st.subheader("Resumo Global e Relatório")
     t1 = st.session_state.total_indenizacao
