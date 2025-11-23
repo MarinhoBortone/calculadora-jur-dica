@@ -11,7 +11,7 @@ import io
 st.set_page_config(page_title="CalcJus Pro Auditável", layout="wide")
 
 st.title("⚖️ CalcJus PRO - Relatórios Periciais")
-st.markdown("Cálculos Judiciais com **Memória de Cálculo Auditável** (Fatores Explícitos).")
+st.markdown("Cálculos Judiciais com **Memória de Cálculo Auditável** e **Metodologia Explícita**.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600)
@@ -65,18 +65,18 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
     indice_nome = config.get('indice_nome', '-')
-    regime = config.get('regime', '-')
+    regime_desc = config.get('regime_desc', '-') # Descrição dinâmica do regime
     
     texto_metodologia = (
         f"DATA BASE DO CÁLCULO: {dt_calc}\n"
-        f"CRITÉRIO DE ATUALIZAÇÃO: {regime}\n"
-        f"ÍNDICE DE CORREÇÃO: {indice_nome} (Fonte: Banco Central/IBGE/FGV)\n"
+        f"CRITÉRIO DE ATUALIZAÇÃO: {regime_desc}\n"
+        f"ÍNDICE DE CORREÇÃO: {indice_nome} (Fonte: Banco Central/SGS)\n"
         f"CRITÉRIO DE JUROS: 1% ao mês simples (Pro-Rata Die) ou SELIC conforme regime.\n"
-        f"DIAS NO MÊS: Calendário Civil (dias efetivos).\n"
-        f"FÓRMULA PADRÃO: Valor Atualizado = Valor Original x Fator Acumulado do Índice.\n"
-        f"FÓRMULA JUROS: Valor dos Juros = Valor Atualizado x (Taxa% x Dias/30)."
+        f"CONVENÇÃO DE TEMPO: Mês Civil (dias efetivos do calendário).\n"
+        f"FÓRMULAS APLICADAS:\n"
+        f"  - Valor Atualizado = Valor Original x Fator Acumulado do Índice.\n"
+        f"  - Juros Moratórios = Valor Atualizado x (Taxa% / 30 x Dias de Atraso)."
     )
-    # CORREÇÃO DO ERRO AQUI: multi_cell em vez de multicell
     pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
 
@@ -89,7 +89,16 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 8, " 2. INDENIZAÇÃO / LUCROS CESSANTES", ln=True, fill=True)
         
         pdf.set_font("Arial", "B", 8)
-        cols = [("Vencimento", 25), ("Valor Orig.", 30), (f"Fator {indice_nome}", 30), ("Valor Atual.", 25), ("Juros (Período)", 45), ("Fator SELIC", 25), ("TOTAL", 30)]
+        # Colunas para Auditoria Clara
+        cols = [
+            ("Vencimento", 25), 
+            ("Valor Orig.", 25), 
+            ("Fator Correção", 25), 
+            ("V. Corrigido", 30), 
+            ("Juros / Mora", 45), 
+            ("Fator SELIC", 25), 
+            ("TOTAL", 30)
+        ]
         for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C')
         pdf.ln()
         
@@ -97,15 +106,16 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         for index, row in dados_ind.iterrows():
             venc = str(row['Vencimento'])
             orig = str(row['Valor Orig.'])
+            # Pega fator, se misto pega Fator F1, se padrão pega Fator CM
             f_cm = str(row.get('Audit Fator CM', row.get('Fator F1', '-')))
             v_corr = str(row.get('V. Corrigido', row.get('V. Fase 1', '-')))
             j_detalhe = str(row.get('Audit Juros %', '-'))
-            if len(j_detalhe) > 25: pdf.set_font("Arial", "", 7) # Ajuste fonte se texto longo
+            if len(j_detalhe) > 30: pdf.set_font("Arial", "", 7)
             f_selic = str(row.get('Audit Fator SELIC', '-'))
             total = str(row['TOTAL'])
 
             data_row = [venc, orig, f_cm, v_corr, j_detalhe, f_selic, total]
-            col_w = [25, 30, 30, 25, 45, 25, 30]
+            col_w = [25, 25, 25, 30, 45, 25, 30]
             
             for i, datum in enumerate(data_row):
                 align = 'L' if i == 4 else 'C'
@@ -138,6 +148,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         headers_pen = [("Vencimento", 30), ("Original", 30), (f"Fator {indice_nome}", 30), ("Atualizado", 30), ("Pago", 30), ("Saldo Devido", 40)]
         for h, w in headers_pen: pdf.cell(w, 8, h, 1, 0, 'C')
         pdf.ln()
+        
         pdf.set_font("Arial", "", 8)
         for index, row in dados_pen.iterrows():
             pdf.cell(30, 8, str(row['Vencimento']), 1, 0, 'C')
@@ -171,7 +182,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     pdf.ln(5)
     pdf.set_font("Arial", "I", 8)
     pdf.set_text_color(0, 0, 0)
-    pdf.multi_cell(0, 5, "Fontes de Consulta: Sistema Gerenciador de Séries Temporais (SGS) do Banco Central do Brasil. Séries utilizadas: 188 (INPC), 189 (IGP-M), 192 (INCC), 4390 (SELIC).")
+    pdf.multi_cell(0, 5, "Fontes Oficiais: Banco Central do Brasil (SGS). Séries: 188 (INPC), 189 (IGP-M), 192 (INCC), 4390 (SELIC).")
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -185,7 +196,7 @@ codigo_indice_padrao = mapa_indices[indice_padrao_nome]
 cod_selic = 4390
 
 st.sidebar.divider()
-st.sidebar.header("2. Penalidades (Execução)")
+st.sidebar.header("2. Penalidades")
 aplicar_multa_523 = st.sidebar.checkbox("Aplicar Multa de 10% (Art. 523)?", value=False)
 aplicar_hon_523 = st.sidebar.checkbox("Aplicar Honorários de 10%?", value=False)
 
@@ -197,11 +208,11 @@ if 'df_indenizacao' not in st.session_state: st.session_state.df_indenizacao = p
 if 'df_honorarios' not in st.session_state: st.session_state.df_honorarios = pd.DataFrame()
 if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input = pd.DataFrame()
 if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
-if 'regime_selecionado' not in st.session_state: st.session_state.regime_selecionado = "Padrão"
+if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "📊 PDF Final"])
 
-# ABA 1 - INDENIZAÇÃO
+# ABA 1 - INDENIZAÇÃO COM AUDITORIA
 with tab1:
     st.subheader("Cálculo de Indenização / Lucros Cessantes")
     c1, c2, c3 = st.columns(3)
@@ -217,11 +228,11 @@ with tab1:
     
     st.markdown("---")
     st.write("**Regime de Atualização:**")
+    # Texto genérico no botão, mas vamos capturar a data para o PDF
     tipo_regime = st.radio("Selecione:", 
         [f"1. Padrão: {indice_padrao_nome} + Juros 1%", "2. SELIC Pura", "3. Misto: Correção/Juros até Data X -> SELIC depois"],
         horizontal=True
     )
-    st.session_state.regime_selecionado = tipo_regime
     
     data_corte_selic = None
     data_citacao_ind = None
@@ -230,14 +241,19 @@ with tab1:
         c_mix1, c_mix2 = st.columns(2)
         data_citacao_ind = c_mix1.date_input("Data Citação (Início Juros Fase 1)", value=date(2024, 3, 1))
         data_corte_selic = c_mix2.date_input("Data Início SELIC (Corte)", value=date(2024, 12, 1))
+        # ATUALIZA O TEXTO DO REGIME PARA O PDF
+        st.session_state.regime_desc = f"Misto ({indice_padrao_nome} + Juros 1% até {data_corte_selic.strftime('%d/%m/%Y')} -> SELIC acumulada)"
     elif "1. Padrão" in tipo_regime:
         data_citacao_ind = st.date_input("Data Citação (Início Juros)", value=date(2025, 2, 25))
+        st.session_state.regime_desc = f"Padrão ({indice_padrao_nome} + Juros 1% a.m.)"
+    else:
+        st.session_state.regime_desc = "SELIC Pura (EC 113/21)"
+        st.info("ℹ️ Regime SELIC Pura: Aplica-se a taxa SELIC (que engloba juros e correção) desde o vencimento.")
 
     if st.button("Calcular Indenização", type="primary"):
         lista_ind = []
         progresso = st.progress(0, text="Buscando índices...")
         
-        # GERAÇÃO DE DATAS
         datas_vencimento = []
         valores_base = []
         
@@ -268,7 +284,6 @@ with tab1:
                 datas_vencimento.append(fim_ef)
                 valores_base.append(val)
 
-        # CÁLCULO
         for i, venc in enumerate(datas_vencimento):
             val_base = valores_base[i]
             progresso.progress((i + 1) / len(datas_vencimento))
@@ -289,7 +304,7 @@ with tab1:
                 dias = (data_calculo - dt_j).days
                 juros_val = v_fase1 * (0.01/30 * dias) if dias > 0 else 0.0
                 perc_juros = (dias/30) 
-                audit_juros_perc = f"{perc_juros:.1f}% ({dias} dias)"
+                audit_juros_perc = f"{perc_juros:.1f}% ({dias}d)"
                 
                 total_final = v_fase1 + juros_val
 
@@ -315,7 +330,7 @@ with tab1:
                         d_f1 = (data_corte_selic - dt_j).days
                         j_f1 = v_f1 * (0.01/30 * d_f1)
                         perc_j1 = (d_f1/30)
-                        audit_juros_perc = f"{perc_j1:.1f}% (F1)"
+                        audit_juros_perc = f"{perc_j1:.1f}% ({d_f1}d F1)"
                     else:
                         j_f1 = 0.0
                     
@@ -424,7 +439,7 @@ with tab4:
     st.metric("TOTAL FINAL", f"R$ {fin:,.2f}")
     
     tot_pdf = {'indenizacao': t1, 'honorarios': t2, 'pensao': t3, 'multa': mul, 'hon_exec': hon, 'final': fin}
-    conf_pdf = {'multa_523': aplicar_multa_523, 'hon_523': aplicar_hon_523, 'metodo': st.session_state.get('regime_selecionado', 'Padrão'), 'indice_nome': indice_padrao_nome, 'data_calculo': data_calculo, 'regime': st.session_state.get('regime_selecionado', 'Padrão')}
+    conf_pdf = {'multa_523': aplicar_multa_523, 'hon_523': aplicar_hon_523, 'metodo': metodo_calculo, 'indice_nome': indice_padrao_nome, 'data_calculo': data_calculo, 'regime_desc': st.session_state.regime_desc}
     
     if st.button("Gerar PDF Oficial"):
         b = gerar_pdf_relatorio(st.session_state.df_indenizacao, st.session_state.df_honorarios, st.session_state.df_pensao_final, tot_pdf, conf_pdf)
