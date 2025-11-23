@@ -8,10 +8,10 @@ from fpdf import FPDF
 import io
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro Multi", layout="wide")
+st.set_page_config(page_title="CalcJus Pro", layout="wide")
 
 st.title("⚖️ CalcJus PRO - Central de Cálculos Judiciais")
-st.markdown("Cálculos com **Regime Misto (Transição para SELIC)**, **Pensão** e **Relatórios PDF**.")
+st.markdown("Cálculos de **Indenizações**, **Honorários** e **Pensão Alimentícia** com Relatório PDF e opção SELIC.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600)
@@ -34,7 +34,7 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
 
 # --- FUNÇÃO GERADORA DE PDF ---
 def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
-    pdf = FPDF()
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     pdf.cell(0, 10, "Relatório de Cálculo Judicial", ln=True, align="C")
@@ -49,7 +49,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 10, "1. Indenização Cível / Lucros Cessantes", ln=True, fill=True)
         pdf.set_font("Arial", "", 8)
         
-        col_w = [20, 20, 45, 25, 25, 25, 30] 
+        col_w = [25, 25, 40, 25, 25, 25, 30]
         headers = ["Vencimento", "Valor Base", "Regra/Índice", "V. Fase 1", "Juros Fase 1", "V. Base SELIC", "TOTAL FINAL"]
         
         for i, h in enumerate(headers):
@@ -64,7 +64,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
             
             pdf.cell(col_w[0], 8, str(row['Vencimento']), 1)
             pdf.cell(col_w[1], 8, str(row['Valor Orig.']), 1)
-            pdf.cell(col_w[2], 8, regra[:22], 1)
+            pdf.cell(col_w[2], 8, regra[:25], 1)
             pdf.cell(col_w[3], 8, v_f1, 1)
             pdf.cell(col_w[4], 8, j_f1, 1)
             pdf.cell(col_w[5], 8, v_selic, 1)
@@ -314,7 +314,6 @@ with tab2:
     if st.button("Calcular Honorários"):
         fator = buscar_fator_bcb(codigo_indice_padrao, d_base, data_calculo)
         tot = v_hon * fator
-        # Simplificado para exemplo
         res = [{"Descrição": "Honorários", "Valor Orig.": f"R$ {v_hon:.2f}", "Fator": f"{fator:.6f}", "TOTAL": f"R$ {tot:.2f}", "_num": tot}]
         st.session_state.df_honorarios = pd.DataFrame(res)
         st.session_state.total_honorarios = tot
@@ -325,10 +324,13 @@ with tab3:
     st.subheader("👶 Pensão Alimentícia")
     c1, c2 = st.columns(2)
     v_pensao = c1.number_input("Valor", value=1000.00)
-    dia = c2.number_input("Dia", value=10, min_value=1, max_value=31) # CORRIGIDO AQUI: value=10
+    # --- CORREÇÃO DO ERRO AQUI: Usando value=10 explicitamente ---
+    dia = c2.number_input("Dia", value=10, min_value=1, max_value=31) 
+    
     c3, c4 = st.columns(2)
     ini = c3.date_input("Início", value=date(2023, 1, 1))
     fim = c4.date_input("Fim", value=date.today())
+    usar_juros_pen = st.checkbox("Aplicar Juros de Mora (1% a.m.)?", value=True, key="ck_juros_pen")
     
     if st.button("1. Gerar Tabela"):
         l = []
@@ -340,21 +342,25 @@ with tab3:
         st.session_state.df_pensao_input = pd.DataFrame(l)
 
     if not st.session_state.df_pensao_input.empty:
-        edited = st.data_editor(st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True)
+        st.write("👇 **Edite abaixo os valores pagos:**")
+        tabela_editada = st.data_editor(st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True)
+        
         if st.button("2. Calcular Saldo"):
             res_p = []
             for i, r in edited.iterrows():
-                v = pd.to_datetime(r["Vencimento"]).date()
-                f = buscar_fator_bcb(codigo_indice_padrao, v, data_calculo)
-                corr = r["Valor Devido (R$)"] * f
-                d = (data_calculo - v).days
-                jur = corr * (0.01/30 * d) if d > 0 else 0.0
-                sal = (corr + jur) - r["Valor Pago (R$)"]
-                res_p.append({
-                    "Vencimento": v.strftime("%d/%m/%Y"), "Valor Orig.": f"R$ {r['Valor Devido (R$)']:,.2f}",
-                    "Fator CM": f"{f:.6f}", "Devido Atual.": f"R$ {corr:,.2f}", "Pago": f"R$ {r['Valor Pago (R$)']:,.2f}",
-                    "SALDO DEVEDOR": f"R$ {sal:,.2f}", "_num": sal
-                })
+                venc = pd.to_datetime(r["Vencimento"]).date()
+                v_orig = row["Valor Devido (R$)"]
+                v_pago = row["Valor Pago (R$)"]
+                fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
+                v_corr = v_orig * fator
+                juros = 0.0
+                if usar_juros_pen:
+                    dias = (data_calculo - venc).days
+                    juros = v_corr * (0.01/30 * dias) if dias > 0 else 0.0
+                total_bruto = v_corr + juros
+                saldo_mes = total_bruto - v_pago
+                res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Devido Orig.": f"R$ {v_orig:,.2f}", "Pago": f"R$ {v_pago:,.2f}", "Devido Atual.": f"R$ {v_corr:,.2f}", "Juros": f"R$ {juros:,.2f}", "SALDO DEVEDOR": f"R$ {saldo_mes:,.2f}", "_num": saldo_mes})
+                
             st.session_state.df_pensao_final = pd.DataFrame(res_p)
             st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
             st.success(f"Saldo: R$ {st.session_state.total_pensao:,.2f}")
