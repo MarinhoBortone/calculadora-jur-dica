@@ -15,7 +15,7 @@ getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
 # Configuração da Página
-st.set_page_config(page_title="CalcJus Pro 4.1 (Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.2 (Final)", layout="wide", page_icon="⚖️")
 
 # CSS Otimizado
 st.markdown("""
@@ -28,7 +28,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.1 - Sistema Integrado")
+st.title("⚖️ CalcJus PRO 4.2 - Sistema Integrado")
 st.markdown("Cálculos Judiciais com Precisão Decimal e Relatórios Detalhados.")
 
 # --- 2. ESTADO DA SESSÃO (SESSION STATE) ---
@@ -197,7 +197,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
             f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
             f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
             f"1. FASE PRÉ-SELIC (Do vencimento até {dt_corte}): O valor original foi corrigido monetariamente pelo índice '{indice_nome}'. "
-            f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit} até a data de corte.\n"
+            f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit} até {dt_corte}.\n"
             f"2. FASE SELIC (De {dt_corte} até {dt_calc}): O montante total acumulado na Fase 1 foi consolidado e, a partir desta data ({dt_corte}), "
             f"atualizado exclusivamente pela variação da Taxa SELIC, vedada a cumulação com outros índices."
         )
