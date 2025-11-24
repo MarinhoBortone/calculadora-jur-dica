@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.6 (Audit)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.7 (Final)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -27,8 +27,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.6 - Versão Auditoria")
-st.markdown("Cálculos Judiciais com **Memorial Descritivo Detalhado**.")
+st.title("⚖️ CalcJus PRO 3.7 - Sistema Blindado")
+st.markdown("Cálculos Judiciais: Indenização, Honorários e Pensão Alimentícia.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
 if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
@@ -56,9 +56,10 @@ def formatar_data_br(dt):
         return dt.strftime("%d/%m/%Y")
     return "-"
 
-# --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
+# --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) - BLINDADA ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
+    # Modo Dev
     if st.session_state.simular_erro_bcb: return None
 
     if data_fim <= data_inicio: return 1.0
@@ -70,14 +71,27 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     
     try:
         response = requests.get(url, timeout=10)
+        
+        # Verifica se a resposta é válida antes de tentar ler JSON
         if response.status_code == 200:
-            dados = response.json()
+            try:
+                dados = response.json()
+            except:
+                return None # Erro ao decodificar JSON (BCB retornou HTML de erro)
+
             fator = 1.0
             for item in dados:
                 try:
-                    val = float(item['valor'])
+                    # TRATAMENTO DE DADOS SENSÍVEL (Resolve o problema do INPC)
+                    val_raw = item['valor']
+                    
+                    # Se vier string com vírgula, troca por ponto
+                    if isinstance(val_raw, str):
+                        val_raw = val_raw.replace(',', '.')
+                        
+                    val = float(val_raw)
                     fator *= (1 + val/100)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, KeyError):
                     continue
             return fator
         else:
@@ -113,24 +127,20 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     if tem_execucao and not tem_aluguel: titulo = "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO"
     elif not tem_execucao and tem_aluguel: titulo = "MEMÓRIA DE CÁLCULO - REAJUSTE CONTRATUAL"
     
-    # Título Principal
     pdf.set_font("Arial", "B", 14)
     pdf.set_fill_color(230, 230, 230)
     pdf.cell(0, 10, titulo, 0, 1, "C", fill=True)
     pdf.ln(5)
     
-    # 1. PARÂMETROS E METODOLOGIA
+    # 1. METODOLOGIA (MEMORIAL)
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(245, 245, 245)
     pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA (MEMORIAL DESCRITIVO)", 0, 1, fill=True)
     pdf.ln(2)
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
-    regime_desc = config.get('regime_desc', '-') 
     
     pdf.set_font("Arial", "", 9)
-    
-    # --- CONSTRUÇÃO DO TEXTO EXPLICATIVO (AUDITORIA) ---
     texto_explicativo = f"DATA BASE DO CÁLCULO: {dt_calc}\n\n"
     
     if tem_execucao:
@@ -140,7 +150,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
             dt_corte = formatar_data_br(config.get('data_corte'))
             dt_cit = formatar_data_br(config.get('data_citacao'))
             indice = config.get('indice_nome', 'Índice')
-            
             texto_explicativo += (
                 f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
                 f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
@@ -156,7 +165,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
                 f"Conforme jurisprudência do STJ e EC 113/21, a Taxa SELIC engloba juros de mora e correção monetária em um único fator."
             )
         else:
-            # Índice + Juros padrão
             indice = config.get('indice_nome', 'Índice')
             dt_cit = formatar_data_br(config.get('data_citacao'))
             texto_explicativo += (
@@ -169,13 +177,12 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.multi_cell(0, 5, texto_explicativo)
     pdf.ln(5)
 
-    # 2. TABELA DE INDENIZAÇÃO
+    # 2. INDENIZAÇÃO
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
         pdf.cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS GERAIS", 0, 1, fill=True)
         pdf.set_font("Arial", "B", 7)
-        # ORDEM CORRIGIDA
         cols = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), ("V. Corrigido", 25), ("Juros / Mora", 45), ("Total Fase 1", 25), ("Fator SELIC", 20), ("TOTAL FINAL", 30)]
         for txt, w in cols: pdf.cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
@@ -319,16 +326,19 @@ aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523)?", value=False
 st.sidebar.divider()
 st.sidebar.markdown("### 🛠️ Área do Desenvolvedor")
 
-# TOGGLE PARA SIMULAR ERRO
-modo_simulacao = st.sidebar.toggle("Simular Queda do BCB (Erro)", value=False)
+# LÓGICA DE LIMPEZA DE CACHE E ERRO
+c_dev1, c_dev2 = st.sidebar.columns(2)
+if c_dev1.button("Limpar Cache"):
+    st.cache_data.clear()
+    st.rerun()
 
-# LÓGICA DO TOGGLE
+modo_simulacao = st.sidebar.toggle("Simular Erro BCB", value=False)
 if modo_simulacao:
     if not st.session_state.simular_erro_bcb:
         st.session_state.simular_erro_bcb = True
         st.cache_data.clear()
         st.rerun()
-    st.sidebar.error("⚠️ SIMULAÇÃO DE ERRO ATIVA")
+    st.sidebar.error("ERRO ATIVO")
 else:
     if st.session_state.simular_erro_bcb:
         st.session_state.simular_erro_bcb = False
@@ -529,7 +539,7 @@ with tab2:
         f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
         
         if f is None:
-            st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão.")
+            st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão ou clique em 'Limpar Cache' no menu.")
             st.stop()
             
         v_corr = v_h * f
@@ -754,7 +764,7 @@ with tab5:
     else:
         st.warning("Nenhum cálculo realizado ainda.")
     
-    # Preparação dos Dados para o PDF (COM PASSAGEM DE PARÂMETROS EXTRAS)
+    # Preparação dos Dados para o PDF
     conf_pdf = {
         'multa_523': aplicar_multa_523, 
         'hon_523': aplicar_hon_523, 
