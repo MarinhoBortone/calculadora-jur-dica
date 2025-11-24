@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.3 (BR)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.4 (Clean)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -27,8 +27,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.3 - Versão 100% Brasileira")
-st.markdown("Cálculos Judiciais: Datas e Moedas no padrão nacional.")
+st.title("⚖️ CalcJus PRO 3.4 - Versão Otimizada")
+st.markdown("Cálculos Judiciais: Interface limpa e direta.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
 if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
@@ -469,7 +469,7 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (DATAS BRASILEIRAS)
+# ABA 2 - HONORÁRIOS (SIMPLIFICADA)
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
@@ -477,49 +477,37 @@ with tab2:
     v_h = col_h1.number_input("Valor Honorários", value=1500.00, min_value=0.0, step=0.01, format="%.2f")
     # FORMATO DD/MM/YYYY
     d_h = col_h2.date_input("Data Base", date(2023, 1, 1), format="DD/MM/YYYY")
+    
     st.write("---")
-    regime_hon = st.radio("Atualização Honorários:", ["1. Correção Monetária + Juros", "2. SELIC Pura"], horizontal=True)
     
     col_opt1, col_opt2 = st.columns(2)
-    indice_hon_sel = None
-    aplicar_juros_hon = False
-    
-    if "1. Correção" in regime_hon:
-        indice_hon_sel = col_opt1.selectbox("Índice", list(mapa_indices_completo.keys()), index=0)
-        aplicar_juros_hon = col_opt2.checkbox("Juros de Mora 1%?", value=True)
-    else:
-        st.info("SELIC engloba correção e juros.")
+    indice_hon_sel = col_opt1.selectbox("Índice de Correção", list(mapa_indices_completo.keys()), index=0)
+    aplicar_juros_hon = col_opt2.checkbox("Aplicar Juros de Mora 1% a.m.?", value=True)
 
     if st.button("Calcular Honorários"):
         if st.session_state.simular_erro_bcb:
              st.error("🚨 ERRO SIMULADO: Conexão interrompida.")
              
         total_hon, desc_audit, juros_txt = 0.0, "", "N/A"
-        f = None
-        if "SELIC Pura" in regime_hon:
-            f = buscar_fator_bcb(cod_selic, d_h, data_calculo)
-            if f is None:
-                st.error("Erro ao buscar SELIC. Verifique sua conexão com a internet.")
-                st.stop()
-            total_hon = v_h * f
-            desc_audit = f"SELIC {f:.5f}"
-            juros_txt = "Incluso"
-        else:
-            cod_ind_hon = mapa_indices_completo[indice_hon_sel]
-            f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
-            if f is None:
-                st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão.")
-                st.stop()
-            v_corr = v_h * f
-            desc_audit = f"{indice_hon_sel} {f:.5f}"
-            val_jur = 0.0
-            if aplicar_juros_hon:
-                dias = (data_calculo - d_h).days
-                if dias > 0:
-                    val_jur = v_corr * (0.01/30 * dias)
-                    juros_txt = formatar_moeda(val_jur)
-            else: juros_txt = "Não"
-            total_hon = v_corr + val_jur
+        cod_ind_hon = mapa_indices_completo[indice_hon_sel]
+        f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
+        
+        if f is None:
+            st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão.")
+            st.stop()
+            
+        v_corr = v_h * f
+        desc_audit = f"{indice_hon_sel} {f:.5f}"
+        val_jur = 0.0
+        
+        if aplicar_juros_hon:
+            dias = (data_calculo - d_h).days
+            if dias > 0:
+                val_jur = v_corr * (0.01/30 * dias)
+                juros_txt = formatar_moeda(val_jur)
+        else: juros_txt = "Não"
+        
+        total_hon = v_corr + val_jur
             
         res = [{
             "Descrição": "Honorários", 
