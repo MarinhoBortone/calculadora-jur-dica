@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
-st.set_page_config(page_title="CalcJus Pro 4.4 (Layout PDF)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.5 (Final)", layout="wide", page_icon="⚖️")
 
 st.markdown("""
 <style>
@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.4 - Sistema Integrado")
+st.title("⚖️ CalcJus PRO 4.5 - Sistema Integrado")
 st.markdown("Cálculos Judiciais com Precisão Decimal e Relatórios Detalhados.")
 
 # --- 2. ESTADO DA SESSÃO ---
@@ -62,8 +62,10 @@ def to_decimal(valor):
             return Decimal(str(valor))
         if isinstance(valor, str):
             valor = valor.strip()
+            # Se tem vírgula, é formato BR (milhar com ponto ou sem, decimal com virgula)
             if ',' in valor:
                 valor = valor.replace('.', '').replace(',', '.')
+            # Se só tem ponto, assume que é separador decimal (segurança)
         return Decimal(str(valor))
     except:
         return Decimal('0.00')
@@ -120,7 +122,7 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     except Exception:
         return None
 
-# --- 5. GERAÇÃO DE PDF (ATUALIZADO PARA CORRIGIR TABELA) ---
+# --- 5. GERAÇÃO DE PDF (COM CORREÇÃO DE LARGURA DE COLUNAS) ---
 class PDFRelatorio(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
@@ -183,48 +185,54 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.safe_multi_cell(0, 5, texto_explicativo)
     pdf.ln(5)
 
-    # --- INDENIZAÇÃO (CORRIGIDA) ---
+    # --- INDENIZAÇÃO ---
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
         pdf.safe_cell(0, 7, " 2. DEMONSTRATIVO DE CÁLCULO - INDENIZAÇÃO", 0, 1, 'L', True)
         
-        # DEFINIÇÃO DINÂMICA DE COLUNAS BASEADA NO REGIME
+        # --- LARGURAS CORRIGIDAS ---
         if "Misto" in tipo_regime:
-            # Colunas reorganizadas para fluxo lógico e larguras aumentadas
-            # Total largura útil ~275mm. Soma abaixo: 25+25+20+30+20+30+25+30 = 205mm (Folga boa)
+            # Colunas reorganizadas e Fator SELIC aumentado para 45mm
             headers = [
-                ("Vencimento", 25), ("Valor Orig.", 25), ("Fator CM", 20), 
-                ("V. Corrigido", 30), ("Fator SELIC", 20), ("Principal Atu.", 30),
-                ("Juros Mora F1", 25), ("TOTAL", 30)
+                ("Vencimento", 25), 
+                ("Valor Orig.", 25), 
+                ("Fator CM", 22), 
+                ("V. Corrigido", 28), 
+                ("Juros F1", 25),
+                ("Subtotal F1", 30),   # Nova coluna de controle
+                ("Fator SELIC", 45),   # AUMENTADO para caber o texto "(S/ Princ.)"
+                ("TOTAL", 35)
             ]
             campos = ['Vencimento', 'Valor Orig.', 'Audit Fator CM', 'V. Corrigido Puro', 
-                      'Audit Fator SELIC', 'Principal Atualizado', 'Audit Juros %', 'TOTAL']
+                      'Audit Juros %', 'Subtotal F1', 'Audit Fator SELIC', 'TOTAL']
         
         elif "SELIC" in tipo_regime:
-            headers = [("Vencimento", 30), ("Valor Orig.", 35), ("Fator SELIC Acum.", 40), ("TOTAL", 40)]
+            headers = [("Vencimento", 30), ("Valor Orig.", 35), ("Fator SELIC Acum.", 50), ("TOTAL", 40)]
             campos = ['Vencimento', 'Valor Orig.', 'Audit Fator SELIC', 'TOTAL']
             
         else: # Padrão
             headers = [
                 ("Vencimento", 25), ("Valor Orig.", 25), ("Fator CM", 25), 
-                ("V. Corrigido", 30), ("Juros %", 20), ("Valor Juros", 30), ("TOTAL", 35)
+                ("V. Corrigido", 30), ("Juros %", 25), ("Valor Juros", 30), ("TOTAL", 35)
             ]
             campos = ['Vencimento', 'Valor Orig.', 'Audit Fator CM', 'V. Corrigido Puro', 
                       'Audit Juros %', 'Valor Juros', 'TOTAL']
 
-        # Cabeçalho da Tabela
-        pdf.set_font("Arial", "B", 8) # Fonte ligeiramente maior que 7 para leitura
+        # Cabeçalho
+        pdf.set_font("Arial", "B", 8)
         for txt, w in headers: pdf.safe_cell(w, 7, txt, 1, 0, 'C')
         pdf.ln()
         
-        # Linhas da Tabela
+        # Linhas
         pdf.set_font("Arial", "", 8)
         for _, row in dados_ind.iterrows():
             widths = [h[1] for h in headers]
             for i, campo in enumerate(campos):
                 valor = str(row.get(campo, '-'))
-                # Centraliza tudo para evitar erro visual
+                # Ajuste de fonte se texto for muito longo
+                if len(valor) > 25: pdf.set_font("Arial", "", 7)
+                else: pdf.set_font("Arial", "", 8)
                 pdf.safe_cell(widths[i], 6, valor, 1, 0, 'C') 
             pdf.ln()
         
@@ -232,7 +240,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # --- DEMAIS SEÇÕES (Mantidas iguais mas usando safe_cell) ---
+    # --- DEMAIS SEÇÕES ---
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
@@ -252,7 +260,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # --- PENSÃO ---
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
@@ -273,7 +280,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.safe_cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
-    # --- ALUGUEL ---
     if dados_aluguel:
         pdf.ln(5)
         pdf.set_font("Arial", "B", 10)
@@ -428,7 +434,7 @@ with tab1:
                     "Vencimento": venc.strftime("%d/%m/%Y"),
                     "Valor Orig.": formatar_moeda(val_mensal),
                     "Audit Fator CM": "-", "V. Corrigido Puro": "-",
-                    "Audit Juros %": "-", "Valor Juros": "-", "Total Fase 1": "-",
+                    "Audit Juros %": "-", "Valor Juros": "-", "Subtotal F1": "-",
                     "Audit Fator SELIC": "-", "Principal Atualizado": "-", "TOTAL": "-",
                     "_num": Decimal('0.00')
                 }
@@ -461,9 +467,10 @@ with tab1:
                         total_final = val_mensal * fator_selic
                         linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
                 
-                # REGIME 3: MISTO (NOVA LÓGICA DE COLUNAS)
+                # REGIME 3: MISTO (LÓGICA AJUSTADA PARA O NOVO PDF)
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
+                        # Fase SELIC Pura (pós corte)
                         fator_selic = buscar_fator_bcb(COD_SELIC, venc, data_calculo)
                         if fator_selic:
                             total_final = val_mensal * fator_selic
@@ -471,7 +478,7 @@ with tab1:
                             linha["Principal Atualizado"] = formatar_moeda(total_final)
                             linha["Audit Juros %"] = "-"
                     else:
-                        # Fase 1
+                        # Fase 1: Correção
                         f_fase1 = buscar_fator_bcb(cod_ind_escolhido, venc, data_corte_selic)
                         if f_fase1:
                             v_corr_f1 = val_mensal * f_fase1
@@ -486,6 +493,10 @@ with tab1:
                                 linha["Audit Juros %"] = formatar_moeda(juros_f1)
                             else:
                                 juros_f1 = Decimal('0.00')
+                            
+                            # Subtotal Fase 1 (para o PDF)
+                            total_fase1 = v_corr_f1 + juros_f1
+                            linha["Subtotal F1"] = formatar_moeda(total_fase1)
 
                             # Fase 2: SELIC apenas sobre o Principal
                             f_selic_f2 = buscar_fator_bcb(COD_SELIC, data_corte_selic, data_calculo)
@@ -494,6 +505,7 @@ with tab1:
                                 linha["Audit Fator SELIC"] = f"{f_selic_f2:.6f}"
                                 linha["Principal Atualizado"] = formatar_moeda(princ_atualizado)
                                 
+                                # Total = Principal (com Selic) + Juros da Fase 1
                                 total_final = princ_atualizado + juros_f1
 
                 linha["TOTAL"] = formatar_moeda(total_final)
