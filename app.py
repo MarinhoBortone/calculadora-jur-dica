@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.9 (Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.0 (Estável)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -19,18 +19,16 @@ st.markdown("""
     .stAlert {
         padding: 0.5rem;
     }
-    /* Destaque para área de dev */
     .dev-mode {
         border: 1px dashed red;
         padding: 10px;
-        border-radius: 5px;
         background-color: #fff0f0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.9 - Sistema Validado")
-st.markdown("Cálculos Judiciais com **Lógica de Dívida Única** e **Proteção de Rede**.")
+st.title("⚖️ CalcJus PRO 3.0 - Versão Estável")
+st.markdown("Cálculos Judiciais: Indenização, Honorários e Pensão Alimentícia.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
 if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
@@ -47,13 +45,8 @@ if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrã
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
-    """
-    Busca o fator acumulado.
-    INCLUI: Checagem do Modo Desenvolvedor para simular falhas.
-    """
-    # --- MODO DE TESTE: SIMULAÇÃO DE ERRO ---
-    if st.session_state.simular_erro_bcb:
-        return None # Simula falha forçada
+    # Modo Dev: Simular Erro
+    if st.session_state.simular_erro_bcb: return None
 
     if data_fim <= data_inicio: return 1.0
     if data_inicio > date.today(): return 1.0
@@ -76,7 +69,7 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
             return fator
         else:
             return None
-    except Exception as e:
+    except Exception:
         return None
 
 # --- CLASSE PDF PROFISSIONAL ---
@@ -282,14 +275,12 @@ modo_simulacao = st.sidebar.toggle("Simular Queda do BCB (Erro)", value=False)
 
 # LÓGICA DO TOGGLE
 if modo_simulacao:
-    # Se ativou, avisa e limpa o cache para o erro aparecer na hora
     if not st.session_state.simular_erro_bcb:
         st.session_state.simular_erro_bcb = True
-        st.cache_data.clear() # Limpa o cache para forçar a re-execução com erro
-        st.rerun() # Recarrega a página para atualizar o status
+        st.cache_data.clear()
+        st.rerun()
     st.sidebar.error("⚠️ SIMULAÇÃO DE ERRO ATIVA")
 else:
-    # Se desativou, limpa para voltar ao normal
     if st.session_state.simular_erro_bcb:
         st.session_state.simular_erro_bcb = False
         st.cache_data.clear()
@@ -301,7 +292,7 @@ else:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (LÓGICA CORRIGIDA PARA DÍVIDA ÚNICA)
+# ABA 1 - INDENIZAÇÃO
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
@@ -350,21 +341,15 @@ with tab1:
 
     if st.button("Calcular Indenização/Dívida", type="primary"):
         lista_ind = []
-        
-        # CHECAGEM PRÉVIA DE SIMULAÇÃO (Para feedback visual imediato)
         if st.session_state.simular_erro_bcb:
              st.error("🚨 ERRO SIMULADO: Falha na conexão com o Banco Central detectada.")
         
         with st.status("Processando...", expanded=True) as status:
             datas_vencimento, valores_base = [], []
-            
-            # --- LÓGICA CORRIGIDA: DÍVIDA ÚNICA ---
             if inicio_atraso == fim_atraso:
-                # Se as datas são iguais, o valor é cheio (não divide por dias)
                 datas_vencimento = [inicio_atraso]
                 valores_base = [val_mensal]
             else:
-                # Se as datas são diferentes, é dívida mensal (aplica Pro-Rata se selecionado)
                 if metodo_calculo == "Ciclo Mensal Fechado":
                      t_date = inicio_atraso
                      while t_date < fim_atraso:
@@ -394,14 +379,12 @@ with tab1:
                 v_fase1 = 0.0
                 v_corrigido_puro = 0.0 
                 
-                # AQUI ENTRA A CHECAGEM DE RETORNO 'NONE'
                 if "1. Índice" in regime_tipo:
                     fator = buscar_fator_bcb(codigo_indice_ind, venc, data_calculo)
                     if fator is None:
                         status.update(label="Erro de Conexão!", state="error")
                         st.error(f"Não foi possível obter índice para {venc.strftime('%d/%m/%Y')}.")
-                        st.stop() # PARA O CÓDIGO
-                        
+                        st.stop()
                     v_fase1 = val_base * fator
                     v_corrigido_puro = v_fase1
                     audit_fator_cm = f"{fator:.5f}" 
@@ -410,19 +393,16 @@ with tab1:
                     juros_val = v_fase1 * (0.01/30 * dias) if dias > 0 else 0.0
                     audit_juros_perc = f"{(dias/30):.1f}% ({dias}d)"
                     total_final = v_fase1 + juros_val
-                    
                 elif "2. Taxa SELIC" in regime_tipo:
                     fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                     if fator is None:
                         status.update(label="Erro de Conexão!", state="error")
                         st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}.")
                         st.stop()
-                        
                     total_final = val_base * fator
                     audit_fator_selic = f"{fator:.5f}"
                     v_fase1 = total_final
                     v_corrigido_puro = total_final
-                    
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
                         fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
@@ -438,7 +418,6 @@ with tab1:
                         if fator_f1 is None:
                             st.error(f"Erro ao buscar índice Fase 1.")
                             st.stop()
-                            
                         v_corrigido_puro = val_base * fator_f1
                         audit_fator_cm = f"{fator_f1:.5f} (f1)"
                         dt_j = data_citacao_ind if venc < data_citacao_ind else venc
@@ -473,7 +452,7 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (COM TRAVAS DE ERRO)
+# ABA 2 - HONORÁRIOS
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
@@ -531,59 +510,72 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (CORRIGIDA E BLINDADA CONTRA ERRO '_num')
+# ABA 3 - PENSÃO (REVERTIDA PARA LAYOUT ORIGINAL + FIX ERROS)
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     st.info("Cálculo de Dívida: O sistema abate o valor pago do original antes de aplicar juros/correção.")
     
-    idx_pensao = st.selectbox("Índice para Pensão:", list(mapa_indices_completo.keys()), index=0)
+    # SELETOR DE ÍNDICE (ADICIONADO CONFORME PEDIDO)
+    idx_pensao = st.selectbox("Índice para Correção da Pensão:", list(mapa_indices_completo.keys()), index=0)
     cod_idx_pensao = mapa_indices_completo[idx_pensao]
-
-    col_p1, col_p2, col_p3 = st.columns(3)
-    v_pensao_base = col_p1.number_input("Valor Parcela", value=1000.00)
-    dia_vencimento = col_p2.number_input("Dia Venc.", value=10, min_value=1, max_value=31)
-    col_d1, col_d2 = st.columns(2)
-    ini_pensao = col_d1.date_input("Início", value=date(2023, 1, 1))
-    fim_pensao = col_d2.date_input("Fim", value=date.today())
     
-    if st.button("1. Gerar Tabela"):
+    # CAMPOS DE DATA (ADICIONADOS E ORGANIZADOS CONFORME PEDIDO)
+    col_d1, col_d2 = st.columns(2)
+    ini_pensao = col_d1.date_input("Data Início", value=date(2023, 1, 1))
+    fim_pensao = col_d2.date_input("Data Fim", value=date.today())
+
+    col_p1, col_p2 = st.columns(2)
+    v_pensao_base = col_p1.number_input("Valor da Parcela (R$)", value=1000.00)
+    dia_vencimento = col_p2.number_input("Dia do Vencimento", value=10, min_value=1, max_value=31)
+    
+    if st.button("1. Gerar Tabela para Preenchimento"):
         l = []
         dt_cursor = ini_pensao.replace(day=dia_vencimento) if dia_vencimento <= 28 else ini_pensao
         if dt_cursor < ini_pensao: dt_cursor += relativedelta(months=1)
+        
         while dt_cursor <= fim_pensao:
-            l.append({"Vencimento": dt_cursor, "Valor Devido (R$)": float(v_pensao_base), "Valor Pago (R$)": 0.0})
+            l.append({
+                "Vencimento": dt_cursor, 
+                "Valor Devido (R$)": float(v_pensao_base), 
+                "Valor Pago (R$)": 0.0
+            })
             dt_cursor += relativedelta(months=1)
         st.session_state.df_pensao_input = pd.DataFrame(l)
 
-    tabela_editada = st.data_editor(st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True, use_container_width=True)
+    tabela_editada = st.data_editor(
+        st.session_state.df_pensao_input, 
+        num_rows="dynamic", 
+        hide_index=True, 
+        use_container_width=True
+    )
     
     if st.button("2. Calcular Saldo Devedor"):
-        # Trava de Segurança do Modo Dev
-        if st.session_state.simular_erro_bcb:
-             st.error("🚨 ERRO SIMULADO: Falha de rede.")
-        
+        # Verificação se a tabela tem dados
         if tabela_editada is not None and not tabela_editada.empty:
+            if st.session_state.simular_erro_bcb:
+                 st.error("🚨 ERRO SIMULADO: Falha de rede.")
+                 st.stop()
+
             res_p = []
-            erro_flag = False
+            erro_con = False
             
             for i, (index, r) in enumerate(tabela_editada.iterrows()):
                 try:
-                    # Tenta converter os dados. Se falhar (ex: data em branco), pula a linha
-                    val_venc = r["Vencimento"]
-                    if pd.isna(val_venc) or str(val_venc).strip() == "": continue
+                    # Tenta ler a data e valores
+                    d_val = r["Vencimento"]
+                    if pd.isna(d_val) or str(d_val).strip() == "": continue
                     
-                    venc = pd.to_datetime(val_venc).date()
+                    venc = pd.to_datetime(d_val).date()
                     v_devido = float(r["Valor Devido (R$)"])
                     v_pago = float(r["Valor Pago (R$)"])
-                except Exception as e:
-                    # Se der erro na leitura da linha, ignoramos ela e seguimos
+                except:
                     continue
                 
                 saldo_base = v_devido - v_pago
                 
-                # Cenario 1: Quitado ou Pago a Maior
                 if saldo_base <= 0:
+                    # Quitado
                     res_p.append({
                         "Vencimento": venc.strftime("%d/%m/%Y"), 
                         "Valor Devido": f"R$ {v_devido:.2f}", 
@@ -595,12 +587,12 @@ with tab3:
                         "TOTAL": "R$ 0.00", 
                         "_num": 0.0
                     })
-                # Cenario 2: Existe Dívida
                 else:
+                    # Devedor
                     fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
                     if fator is None:
-                        erro_flag = True
-                        break # Para o loop se o BCB falhar
+                        erro_con = True
+                        break
                         
                     v_corr = saldo_base * fator
                     juros = 0.0
@@ -620,35 +612,28 @@ with tab3:
                         "_num": total_linha
                     })
             
-            # --- ÁREA DA CORREÇÃO DO ERRO KEYERROR ---
-            if erro_flag:
-                st.error("Erro de conexão com BCB. Não foi possível calcular.")
-                st.stop()
-            
-            if not res_p:
-                # Se a lista estiver vazia (nenhuma linha válida), mostramos aviso e NÃO calculamos soma
-                st.warning("Nenhuma linha válida encontrada para cálculo. Verifique as datas e valores na tabela.")
+            if erro_con:
+                st.error("Erro ao conectar com BCB. Verifique sua internet.")
+            elif not res_p:
+                st.warning("Nenhum dado válido para calcular.")
                 st.session_state.total_pensao = 0.0
-                st.session_state.df_pensao_final = pd.DataFrame() # DataFrame vazio limpo
             else:
-                # Se tem dados, cria o DF e soma
                 st.session_state.df_pensao_final = pd.DataFrame(res_p)
-                # Verifica se a coluna _num existe antes de somar (Proteção extra)
+                # SOMA PROTEGIDA
                 if "_num" in st.session_state.df_pensao_final.columns:
                     st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
                 else:
                     st.session_state.total_pensao = 0.0
-                    
-                st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
                 
-                # Exibe tabela sem a coluna oculta _num
-                cols_to_show = [c for c in st.session_state.df_pensao_final.columns if c != "_num"]
-                st.dataframe(st.session_state.df_pensao_final[cols_to_show], use_container_width=True, hide_index=True)
+                st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
+                # Exibe sem a coluna oculta
+                cols_vis = [c for c in st.session_state.df_pensao_final.columns if c != "_num"]
+                st.dataframe(st.session_state.df_pensao_final[cols_vis], use_container_width=True, hide_index=True)
         else:
-            st.warning("Gere a tabela primeiro (Botão 1) antes de calcular.")
+            st.warning("Gere a tabela primeiro.")
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL (COM TRAVAS DE ERRO)
+# ABA 4 - REAJUSTE ALUGUEL
 # ==============================================================================
 with tab4:
     st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
