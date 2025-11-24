@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.4", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 2.5", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -22,8 +22,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.4 - Sistema Jurídico Completo")
-st.markdown("Cálculos de Execução (Indenização, Honorários, Pensão) + **Reajuste Contratual**.")
+st.title("⚖️ CalcJus PRO 2.5 - Sistema Modular Inteligente")
+st.markdown("Gera relatórios independentes ou unificados conforme sua necessidade.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -57,7 +57,7 @@ class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 10)
         self.set_text_color(50, 50, 50)
-        self.cell(0, 5, 'CALCJUS PRO - MEMÓRIA DE CÁLCULO', 0, 1, 'R')
+        self.cell(0, 5, 'CALCJUS PRO - SISTEMA DE CÁLCULOS', 0, 1, 'R')
         self.set_draw_color(0, 0, 0)
         self.line(10, 15, 287, 15) 
         self.ln(8)
@@ -68,19 +68,27 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 5, f'Página {self.page_no()}/{{nb}} | Documento gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
 
-# --- FUNÇÃO GERADORA DE RELATÓRIO (Focada na Execução) ---
-def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
+# --- FUNÇÃO GERADORA DE RELATÓRIO (MODULAR) ---
+def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, config):
     pdf = PDF(orientation='L', unit='mm', format='A4')
     pdf.alias_nb_pages()
     pdf.add_page()
     
+    # Determina o Título do Relatório baseado no conteúdo
+    tem_execucao = (totais['final'] > 0)
+    tem_aluguel = (dados_aluguel is not None)
+    
+    titulo = "RELATÓRIO GERAL"
+    if tem_execucao and not tem_aluguel: titulo = "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO"
+    elif not tem_execucao and tem_aluguel: titulo = "MEMÓRIA DE CÁLCULO - REAJUSTE CONTRATUAL"
+    
     # IDENTIFICAÇÃO
     pdf.set_font("Arial", "B", 14)
     pdf.set_fill_color(230, 230, 230)
-    pdf.cell(0, 10, "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO", 0, 1, "C", fill=True)
+    pdf.cell(0, 10, titulo, 0, 1, "C", fill=True)
     pdf.ln(5)
     
-    # METODOLOGIA
+    # METODOLOGIA (Dinâmica)
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(245, 245, 245)
     pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA", 0, 1, fill=True)
@@ -91,18 +99,24 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
     regime_desc = config.get('regime_desc', '-') 
     
     pdf.set_font("Arial", "", 9)
-    texto_metodologia = (
-        f"DATA BASE DO CÁLCULO: {dt_calc}\n"
-        f"CRITÉRIO DE ATUALIZAÇÃO GERAL: {regime_desc}\n"
-        f"ÍNDICE DE CORREÇÃO BASE: {indice_nome} (Fonte: Banco Central/SGS)\n"
-        f"CRITÉRIO DE JUROS: 1% ao mês simples (Pro-Rata Die) ou SELIC conforme regime.\n"
-        f"PENSÃO ALIMENTÍCIA: Atualização incide sobre o saldo líquido (Valor Devido - Valor Pago)."
-    )
+    texto_metodologia = f"DATA BASE DO CÁLCULO: {dt_calc}\n"
+    
+    if tem_execucao:
+        texto_metodologia += (
+            f"CRITÉRIO EXECUÇÃO: {regime_desc}\n"
+            f"ÍNDICE PADRÃO: {indice_nome} (Fonte: Banco Central/SGS)\n"
+            f"JUROS: 1% a.m. simples ou SELIC conforme seção.\n"
+        )
+    if tem_aluguel:
+        texto_metodologia += "REAJUSTE ALUGUEL: Índice acumulado (juros compostos do índice) no período, sem mora.\n"
+        
     pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
 
+    # --- SEÇÃO 2: EXECUÇÃO (Só imprime se tiver dados) ---
+    
     # INDENIZAÇÃO
-    if totais['indenizacao'] > 0:
+    if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
         pdf.cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS GERAIS", 0, 1, fill=True)
@@ -125,7 +139,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.ln(3)
 
     # HONORÁRIOS
-    if totais['honorarios'] > 0:
+    if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
         pdf.cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, fill=True)
@@ -146,7 +160,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.ln(3)
 
     # PENSÃO
-    if totais['pensao'] > 0:
+    if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
         pdf.cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", 0, 1, fill=True)
@@ -172,27 +186,59 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.set_font("Arial", "B", 9)
         pdf.cell(0, 7, f"Subtotal Pensão: R$ {totais['pensao']:,.2f}", 0, 1, 'R')
 
-    # RESUMO
-    pdf.ln(5)
-    pdf.set_draw_color(0, 0, 0)
-    pdf.set_fill_color(255, 255, 255)
-    pdf.set_font("Arial", "B", 11)
-    pdf.cell(100, 8, "RESUMO FINAL DA EXECUÇÃO", "B", 1, 'L')
-    pdf.ln(2)
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(140, 8, "Principal Atualizado (Soma dos Subtotais)", 0, 0)
-    pdf.cell(40, 8, f"R$ {(totais['indenizacao'] + totais['honorarios'] + totais['pensao']):,.2f}", 0, 1, 'R')
-    if config['multa_523']:
-        pdf.cell(140, 8, "Multa Art. 523 CPC (10%)", 0, 0)
-        pdf.cell(40, 8, f"R$ {totais['multa']:,.2f}", 0, 1, 'R')
-    if config['hon_523']:
-        pdf.cell(140, 8, "Honorários Execução Art. 523 (10%)", 0, 0)
-        pdf.cell(40, 8, f"R$ {totais['hon_exec']:,.2f}", 0, 1, 'R')
-    pdf.ln(2)
-    pdf.set_font("Arial", "B", 14)
-    pdf.set_fill_color(220, 220, 220)
-    pdf.cell(140, 12, "TOTAL GERAL DA EXECUÇÃO", 1, 0, 'L', fill=True)
-    pdf.cell(40, 12, f"R$ {totais['final']:,.2f}", 1, 1, 'R', fill=True)
+    # --- SEÇÃO 3: REAJUSTE DE ALUGUEL (NOVA) ---
+    if tem_aluguel:
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_fill_color(255, 255, 220) # Amarelo claro
+        pdf.cell(0, 7, " DEMONSTRATIVO DE REAJUSTE DE ALUGUEL (CONTRATUAL)", 0, 1, fill=True)
+        
+        da = dados_aluguel
+        pdf.set_font("Arial", "", 10)
+        pdf.ln(2)
+        
+        # Tabela Simples de Reajuste
+        pdf.cell(50, 8, "Item", 1, 0, 'C')
+        pdf.cell(100, 8, "Detalhe", 1, 1, 'C')
+        
+        pdf.cell(50, 8, "Valor Atual", 1, 0, 'L')
+        pdf.cell(100, 8, f"R$ {da['valor_antigo']:,.2f}", 1, 1, 'R')
+        
+        pdf.cell(50, 8, "Índice Aplicado", 1, 0, 'L')
+        pdf.cell(100, 8, f"{da['indice']} (Acumulado: {(da['fator']-1)*100:.4f}%)", 1, 1, 'R')
+        
+        pdf.cell(50, 8, "Período Apurado", 1, 0, 'L')
+        pdf.cell(100, 8, da['periodo'], 1, 1, 'R')
+        
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(50, 10, "NOVO ALUGUEL", 1, 0, 'L')
+        pdf.cell(100, 10, f"R$ {da['novo_valor']:,.2f}", 1, 1, 'R')
+        pdf.ln(3)
+
+
+    # --- RESUMO FINAL (Só se houver execução de dívida) ---
+    if tem_execucao:
+        pdf.ln(5)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(100, 8, "RESUMO DA EXECUÇÃO (DÍVIDAS)", "B", 1, 'L')
+        pdf.ln(2)
+        pdf.set_font("Arial", "", 10)
+        pdf.cell(140, 8, "Principal Atualizado (Soma dos Subtotais)", 0, 0)
+        pdf.cell(40, 8, f"R$ {(totais['indenizacao'] + totais['honorarios'] + totais['pensao']):,.2f}", 0, 1, 'R')
+        if config['multa_523']:
+            pdf.cell(140, 8, "Multa Art. 523 CPC (10%)", 0, 0)
+            pdf.cell(40, 8, f"R$ {totais['multa']:,.2f}", 0, 1, 'R')
+        if config['hon_523']:
+            pdf.cell(140, 8, "Honorários Execução Art. 523 (10%)", 0, 0)
+            pdf.cell(40, 8, f"R$ {totais['hon_exec']:,.2f}", 0, 1, 'R')
+        pdf.ln(2)
+        pdf.set_font("Arial", "B", 14)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(140, 12, "TOTAL GERAL DA EXECUÇÃO", 1, 0, 'L', fill=True)
+        pdf.cell(40, 12, f"R$ {totais['final']:,.2f}", 1, 1, 'R', fill=True)
+        
     pdf.ln(5)
     pdf.set_font("Arial", "I", 7)
     pdf.multi_cell(0, 4, "Aviso Legal: Estimativa baseada em índices públicos do BCB. Diferenças de centavos podem ocorrer devido a arredondamentos.")
@@ -229,19 +275,21 @@ if 'df_indenizacao' not in st.session_state: st.session_state.df_indenizacao = p
 if 'df_honorarios' not in st.session_state: st.session_state.df_honorarios = pd.DataFrame()
 if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input = pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"])
 if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
+# NOVO ESTADO PARA ALUGUEL
+if 'dados_aluguel' not in st.session_state: st.session_state.dados_aluguel = None 
 if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
 
 # ABAS - Ordem Ajustada
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF Execução"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (Cálculo de Dívida com Juros)
+# ABA 1 - INDENIZAÇÃO
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
     col_input1, col_input2, col_input3 = st.columns(3)
     valor_contrato = col_input1.number_input("Valor Base", value=1000.00, step=100.0)
-    perc_indenizacao = col_input2.number_input("Percentual ou Multiplicador (100% = valor cheio)", value=100.0, step=10.0)
+    perc_indenizacao = col_input2.number_input("Percentual ou Multiplicador", value=100.0, step=10.0)
     val_mensal = valor_contrato * (perc_indenizacao / 100)
     col_input3.metric("Valor Mensal Base", f"R$ {val_mensal:,.2f}")
     
@@ -357,15 +405,12 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (INPUT LIBERADO)
+# ABA 2 - HONORÁRIOS
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
     col_h1, col_h2 = st.columns(2)
-    
-    # CORREÇÃO: Input liberado (min_value=0.0 e step=0.01) para aceitar qualquer valor
     v_h = col_h1.number_input("Valor Honorários", value=1500.00, min_value=0.0, step=0.01, format="%.2f")
-    
     d_h = col_h2.date_input("Data Base", date(2023, 1, 1))
     st.write("---")
     regime_hon = st.radio("Atualização Honorários:", ["1. Correção Monetária + Juros", "2. SELIC Pura"], horizontal=True)
@@ -408,7 +453,7 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (Lógica Correta: Abate -> Atualiza)
+# ABA 3 - PENSÃO
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
@@ -458,7 +503,7 @@ with tab3:
             st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL (NOVA - SEM JUROS, SEM INDENIZAÇÃO)
+# ABA 4 - REAJUSTE ALUGUEL (SALVA NO ESTADO PARA PDF)
 # ==============================================================================
 with tab4:
     st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
@@ -467,12 +512,9 @@ with tab4:
     c_alug1, c_alug2, c_alug3 = st.columns(3)
     val_atual_aluguel = c_alug1.number_input("Valor Atual do Aluguel", value=2000.00, step=50.0)
     dt_reajuste_aluguel = c_alug2.date_input("Data do Reajuste (Aniversário)", value=date.today())
+    idx_aluguel = c_alug3.selectbox("Índice de Reajuste", list(mapa_indices.keys()), index=1)
     
-    # Seletor de Índice Exclusivo para esta aba
-    idx_aluguel = c_alug3.selectbox("Índice de Reajuste", list(mapa_indices.keys()), index=1, help="Geralmente IGP-M ou IPCA")
-    
-    if st.button("Calcular Novo Valor de Aluguel"):
-        # Calcula acumulado de 12 meses atrás até a data do reajuste
+    if st.button("Calcular Novo Valor"):
         dt_inicio_12m = dt_reajuste_aluguel - relativedelta(months=12)
         cod_serie_aluguel = mapa_indices[idx_aluguel]
         
@@ -483,38 +525,65 @@ with tab4:
         dif = novo_valor_aluguel - val_atual_aluguel
         perc_acum = (fator_reajuste - 1) * 100
         
+        # Salva no Estado para o PDF ler depois
+        st.session_state.dados_aluguel = {
+            'valor_antigo': val_atual_aluguel,
+            'novo_valor': novo_valor_aluguel,
+            'indice': idx_aluguel,
+            'periodo': f"{dt_inicio_12m.strftime('%d/%m/%Y')} a {dt_reajuste_aluguel.strftime('%d/%m/%Y')}",
+            'fator': fator_reajuste
+        }
+        
         st.markdown("### Resultado do Reajuste")
         m1, m2, m3 = st.columns(3)
-        m1.metric("Índice Acumulado (12 Meses)", f"{perc_acum:.4f}%")
-        m2.metric("Aumento (R$)", f"R$ {dif:,.2f}")
+        m1.metric("Índice Acumulado", f"{perc_acum:.4f}%")
+        m2.metric("Aumento", f"R$ {dif:,.2f}")
         m3.metric("Novo Aluguel", f"R$ {novo_valor_aluguel:,.2f}")
-        
-        st.success(f"Cálculo realizado com sucesso! Período: {dt_inicio_12m.strftime('%d/%m/%Y')} a {dt_reajuste_aluguel.strftime('%d/%m/%Y')}")
-        st.warning("Nota: Este cálculo serve apenas para atualização contratual e não compõe a memória de cálculo de execução (dívida) no PDF.")
 
 # ==============================================================================
-# ABA 5 - PDF FINAL (EXECUÇÃO)
+# ABA 5 - PDF FINAL (MODULAR)
 # ==============================================================================
 with tab5:
-    st.header("Gerar Relatório de Execução")
-    st.markdown("Este relatório compila as dívidas calculadas nas abas **Indenização**, **Honorários** e **Pensão**.")
+    st.header("Gerar Relatório / PDF")
     
     t1 = st.session_state.total_indenizacao
     t2 = st.session_state.total_honorarios
     t3 = st.session_state.total_pensao
+    tem_aluguel = st.session_state.dados_aluguel is not None
     
     sub = t1 + t2 + t3
     mul = sub * 0.10 if aplicar_multa_523 else 0.0
     hon = sub * 0.10 if aplicar_hon_523 else 0.0
     fin = sub + mul + hon
     
-    st.metric("TOTAL DA EXECUÇÃO", f"R$ {fin:,.2f}")
+    st.write("### Itens que serão incluídos no PDF:")
+    c_status1, c_status2, c_status3, c_status4 = st.columns(4)
+    c_status1.checkbox("Indenização/Dívida", value=(t1 > 0), disabled=True)
+    c_status2.checkbox("Honorários", value=(t2 > 0), disabled=True)
+    c_status3.checkbox("Pensão", value=(t3 > 0), disabled=True)
+    c_status4.checkbox("Reajuste Aluguel", value=tem_aluguel, disabled=True)
+    
+    st.write("---")
+    if fin > 0:
+        st.metric("TOTAL DA EXECUÇÃO (DÍVIDAS)", f"R$ {fin:,.2f}")
+    elif tem_aluguel:
+        st.info("Apenas Reajuste de Aluguel será gerado (sem valor de execução).")
+    else:
+        st.warning("Nenhum cálculo realizado ainda.")
     
     conf_pdf = {'multa_523': aplicar_multa_523, 'hon_523': aplicar_hon_523, 'metodo': metodo_calculo, 'indice_nome': indice_padrao_nome, 'data_calculo': data_calculo, 'regime_desc': st.session_state.regime_desc}
     tot_pdf = {'indenizacao': t1, 'honorarios': t2, 'pensao': t3, 'multa': mul, 'hon_exec': hon, 'final': fin}
     
-    if st.button("📄 Baixar PDF da Execução"):
-        if fin == 0: st.error("Nenhum valor de dívida calculado.")
+    if st.button("📄 Gerar PDF Inteligente"):
+        if fin == 0 and not tem_aluguel:
+            st.error("Realize pelo menos um cálculo antes de gerar o PDF.")
         else:
-            pdf_bytes = gerar_pdf_relatorio(st.session_state.df_indenizacao, st.session_state.df_honorarios, st.session_state.df_pensao_final, tot_pdf, conf_pdf)
-            st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name="Execucao_CalcJus.pdf", mime="application/pdf")
+            pdf_bytes = gerar_pdf_relatorio(
+                st.session_state.df_indenizacao, 
+                st.session_state.df_honorarios, 
+                st.session_state.df_pensao_final, 
+                st.session_state.dados_aluguel,
+                tot_pdf, 
+                conf_pdf
+            )
+            st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name="Relatorio_CalcJus.pdf", mime="application/pdf")
