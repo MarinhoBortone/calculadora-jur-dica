@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.1", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 2.2", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -22,7 +22,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.1 - Relatórios Periciais Auditáveis")
+st.title("⚖️ CalcJus PRO 2.2 - Relatórios Periciais Auditáveis")
 st.markdown("Sistema de Cálculos Judiciais com **Memória de Cálculo Detalhada** e **Metodologia Explícita**.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
@@ -100,7 +100,8 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         f"CRITÉRIO DE ATUALIZAÇÃO GERAL: {regime_desc}\n"
         f"ÍNDICE DE CORREÇÃO BASE: {indice_nome} (Fonte: Banco Central/SGS)\n"
         f"CRITÉRIO DE JUROS: 1% ao mês simples (Pro-Rata Die) ou SELIC conforme regime selecionado.\n"
-        f"Nota: Honorários e Pensões podem ter critérios específicos detalhados em suas respectivas seções."
+        f"Nota: Honorários e Pensões podem ter critérios específicos detalhados em suas respectivas seções.\n"
+        f"Nota sobre Amortizações (Pensão): Atualização incide sobre o saldo líquido (Devido - Pago)."
     )
     pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
@@ -143,7 +144,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, fill=True)
         
         pdf.set_font("Arial", "B", 7)
-        # Cabeçalho Honorários
         cols_hon = [("Descrição", 60), ("Valor Orig.", 30), ("Fator/Índice", 40), ("Juros", 40), ("TOTAL", 40)]
         for txt, w in cols_hon: pdf.cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
@@ -168,20 +168,28 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS EM ABERTO)", 0, 1, fill=True)
         
         pdf.set_font("Arial", "B", 7)
-        headers_pen = [("Vencimento", 25), ("Original", 25), ("Fator CM", 25), ("Atualizado", 25), ("Juros", 25), ("Pago", 25), ("Saldo Devido", 30)]
+        # Colunas ajustadas para a nova lógica
+        headers_pen = [("Vencimento", 25), ("Devido", 25), ("Pago", 25), ("Base Cálculo", 25), ("Fator CM", 20), ("Atualizado", 25), ("Juros", 25), ("TOTAL", 30)]
         for h, w in headers_pen: pdf.cell(w, 6, h, 1, 0, 'C')
         pdf.ln()
         
         pdf.set_font("Arial", "", 7)
         for index, row in dados_pen.iterrows():
             pdf.cell(25, 6, str(row['Vencimento']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Valor Orig.']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Fator CM']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Devido Atual.']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row.get('Juros', '-')), 1, 0, 'C')
-            pdf.cell(25, 6, str(row.get('Pago', '-')), 1, 0, 'C')
+            pdf.cell(25, 6, str(row['Valor Devido']), 1, 0, 'C')
+            pdf.cell(25, 6, str(row['Valor Pago']), 1, 0, 'C')
+            
+            # Destaque para a Base de Cálculo
             pdf.set_font("Arial", "B", 7)
-            pdf.cell(30, 6, str(row['SALDO DEVEDOR']), 1, 0, 'C')
+            pdf.cell(25, 6, str(row['Base Cálculo']), 1, 0, 'C')
+            pdf.set_font("Arial", "", 7)
+            
+            pdf.cell(20, 6, str(row['Fator CM']), 1, 0, 'C')
+            pdf.cell(25, 6, str(row['Atualizado']), 1, 0, 'C')
+            pdf.cell(25, 6, str(row.get('Juros', '-')), 1, 0, 'C')
+            
+            pdf.set_font("Arial", "B", 7)
+            pdf.cell(30, 6, str(row['TOTAL']), 1, 0, 'C')
             pdf.set_font("Arial", "", 7)
             pdf.ln()
         
@@ -399,38 +407,26 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (REFORMULADA)
+# ABA 2 - HONORÁRIOS
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
     st.markdown("Configure os parâmetros específicos para a verba honorária:")
     
-    # Inputs básicos
     col_h1, col_h2 = st.columns(2)
     v_h = col_h1.number_input("Valor Nominal (Honorários)", 1500.00)
     d_h = col_h2.date_input("Data Base (Fixação/Vencimento)", date(2023, 1, 1))
     
     st.write("---")
     
-    # Configuração de Regime Exclusiva para Honorários
-    regime_hon = st.radio(
-        "Regime de Atualização (Honorários):", 
-        ["1. Correção Monetária + Juros", "2. SELIC Pura"], 
-        horizontal=True
-    )
+    regime_hon = st.radio("Regime de Atualização (Honorários):", ["1. Correção Monetária + Juros", "2. SELIC Pura"], horizontal=True)
     
     col_opt1, col_opt2 = st.columns(2)
-    
     indice_hon_sel = None
     aplicar_juros_hon = False
     
     if "1. Correção" in regime_hon:
-        # Permite escolher qualquer índice, inclusive repetindo o da barra lateral ou mudando
-        indice_hon_sel = col_opt1.selectbox(
-            "Índice de Correção", 
-            list(mapa_indices.keys()), 
-            index=list(mapa_indices.keys()).index(indice_padrao_nome) # Padrão igual ao sidebar
-        )
+        indice_hon_sel = col_opt1.selectbox("Índice de Correção", list(mapa_indices.keys()), index=list(mapa_indices.keys()).index(indice_padrao_nome))
         aplicar_juros_hon = col_opt2.checkbox("Aplicar Juros de Mora (1% a.m.)?", value=True)
     else:
         st.info("ℹ️ No regime SELIC Pura, a taxa abrange correção e juros.")
@@ -440,20 +436,16 @@ with tab2:
         desc_audit = ""
         juros_txt = "N/A"
         
-        # Lógica de Cálculo
         if "SELIC Pura" in regime_hon:
-            # SELIC
             f = buscar_fator_bcb(cod_selic, d_h, data_calculo)
             total_hon = v_h * f
             desc_audit = f"SELIC (Fator: {f:.5f})"
             juros_txt = "Incluso na SELIC"
         else:
-            # Índice + Juros
             cod_ind_hon = mapa_indices[indice_hon_sel]
             f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
             v_corr = v_h * f
             desc_audit = f"{indice_hon_sel} (Fator: {f:.5f})"
-            
             valor_juros = 0.0
             if aplicar_juros_hon:
                 dias = (data_calculo - d_h).days
@@ -462,28 +454,21 @@ with tab2:
                     juros_txt = f"R$ {valor_juros:,.2f} ({dias}d)"
             else:
                 juros_txt = "Não Aplicado"
-                
             total_hon = v_corr + valor_juros
             
-        res = [{
-            "Descrição": "Honorários Advocatícios", 
-            "Valor Orig.": f"R$ {v_h:,.2f}", 
-            "Audit Fator": desc_audit, 
-            "Juros": juros_txt, 
-            "TOTAL": f"R$ {total_hon:,.2f}", 
-            "_num": total_hon
-        }]
-        
+        res = [{"Descrição": "Honorários Advocatícios", "Valor Orig.": f"R$ {v_h:,.2f}", "Audit Fator": desc_audit, "Juros": juros_txt, "TOTAL": f"R$ {total_hon:,.2f}", "_num": total_hon}]
         st.session_state.df_honorarios = pd.DataFrame(res)
         st.session_state.total_honorarios = total_hon
         st.success(f"Honorários Atualizados: R$ {total_hon:,.2f}")
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO
+# ABA 3 - PENSÃO (CORRIGIDA)
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
+    st.info("ℹ️ A atualização incide apenas sobre o **Saldo Devedor Líquido** (Devido - Pago), evitando excesso de execução.")
+    
     col_p1, col_p2, col_p3 = st.columns(3)
     v_pensao_base = col_p1.number_input("Valor da Parcela Mensal", value=1000.00)
     dia_vencimento = col_p2.number_input("Dia de Vencimento", value=10, min_value=1, max_value=31)
@@ -520,30 +505,53 @@ with tab3:
                 bar.progress((i+1)/total_rows)
                 try:
                     venc = pd.to_datetime(r["Vencimento"]).date()
-                    v_orig, v_pago = float(r["Valor Devido (R$)"]), float(r["Valor Pago (R$)"])
+                    v_devido = float(r["Valor Devido (R$)"])
+                    v_pago = float(r["Valor Pago (R$)"])
                 except: continue
                 
-                fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
-                v_corr = v_orig * fator
-                juros = 0.0
-                dias = (data_calculo - venc).days
-                if dias > 0: juros = v_corr * (0.01/30 * dias)
-                total_bruto = v_corr + juros
+                # CÁLCULO CORRIGIDO: ABATIMENTO NA ORIGEM
+                saldo_base = v_devido - v_pago
                 
-                fator_pago = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
-                v_pago_atualizado = v_pago * fator_pago
-                saldo_mes = max(0, total_bruto - v_pago_atualizado)
-                
-                res_p.append({
-                    "Vencimento": venc.strftime("%d/%m/%Y"), "Valor Orig.": f"R$ {v_orig:,.2f}", 
-                    "Fator CM": f"{fator:.5f}", "Devido Atual.": f"R$ {v_corr:,.2f}", 
-                    "Juros": f"R$ {juros:,.2f}", "Pago": f"R$ {v_pago:,.2f}",
-                    "SALDO DEVEDOR": f"R$ {saldo_mes:,.2f}", "_num": saldo_mes
-                })
+                # Se pagou a mais ou igual, saldo é zero
+                if saldo_base <= 0:
+                    res_p.append({
+                        "Vencimento": venc.strftime("%d/%m/%Y"), 
+                        "Valor Devido": f"R$ {v_devido:,.2f}",
+                        "Valor Pago": f"R$ {v_pago:,.2f}",
+                        "Base Cálculo": f"R$ 0,00", # Sem dívida
+                        "Fator CM": "-",
+                        "Atualizado": "QUITADO", 
+                        "Juros": "-",
+                        "TOTAL": f"R$ 0,00",
+                        "_num": 0.0
+                    })
+                else:
+                    # Atualiza apenas a diferença
+                    fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
+                    v_corr = saldo_base * fator
+                    
+                    juros = 0.0
+                    dias = (data_calculo - venc).days
+                    if dias > 0: juros = v_corr * (0.01/30 * dias)
+                    
+                    total_linha = v_corr + juros
+                    
+                    res_p.append({
+                        "Vencimento": venc.strftime("%d/%m/%Y"), 
+                        "Valor Devido": f"R$ {v_devido:,.2f}",
+                        "Valor Pago": f"R$ {v_pago:,.2f}",
+                        "Base Cálculo": f"R$ {saldo_base:,.2f}", # Mostra a base real
+                        "Fator CM": f"{fator:.5f}", 
+                        "Atualizado": f"R$ {v_corr:,.2f}", 
+                        "Juros": f"R$ {juros:,.2f}", 
+                        "TOTAL": f"R$ {total_linha:,.2f}", 
+                        "_num": total_linha
+                    })
+
             bar.empty()
             st.session_state.df_pensao_final = pd.DataFrame(res_p)
             st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
-            st.success(f"Saldo Devedor Total: R$ {st.session_state.total_pensao:,.2f}")
+            st.success(f"Saldo Devedor Líquido Total: R$ {st.session_state.total_pensao:,.2f}")
             st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
