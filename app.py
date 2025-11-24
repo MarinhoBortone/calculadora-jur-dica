@@ -531,7 +531,7 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (COM TRAVAS DE ERRO)
+# ABA 3 - PENSÃO (CORRIGIDA E BLINDADA CONTRA ERRO '_num')
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
@@ -559,41 +559,93 @@ with tab3:
     tabela_editada = st.data_editor(st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True, use_container_width=True)
     
     if st.button("2. Calcular Saldo Devedor"):
+        # Trava de Segurança do Modo Dev
         if st.session_state.simular_erro_bcb:
              st.error("🚨 ERRO SIMULADO: Falha de rede.")
         
-        if not tabela_editada.empty:
+        if tabela_editada is not None and not tabela_editada.empty:
             res_p = []
             erro_flag = False
+            
             for i, (index, r) in enumerate(tabela_editada.iterrows()):
                 try:
-                    venc = pd.to_datetime(r["Vencimento"]).date()
-                    v_devido, v_pago = float(r["Valor Devido (R$)"]), float(r["Valor Pago (R$)"])
-                except: continue
+                    # Tenta converter os dados. Se falhar (ex: data em branco), pula a linha
+                    val_venc = r["Vencimento"]
+                    if pd.isna(val_venc) or str(val_venc).strip() == "": continue
+                    
+                    venc = pd.to_datetime(val_venc).date()
+                    v_devido = float(r["Valor Devido (R$)"])
+                    v_pago = float(r["Valor Pago (R$)"])
+                except Exception as e:
+                    # Se der erro na leitura da linha, ignoramos ela e seguimos
+                    continue
                 
                 saldo_base = v_devido - v_pago
+                
+                # Cenario 1: Quitado ou Pago a Maior
                 if saldo_base <= 0:
-                    res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:.2f}", "Valor Pago": f"R$ {v_pago:.2f}", "Base Cálculo": "R$ 0.00", "Fator CM": "-", "Atualizado": "QUITADO", "Juros": "-", "TOTAL": "R$ 0.00", "_num": 0.0})
+                    res_p.append({
+                        "Vencimento": venc.strftime("%d/%m/%Y"), 
+                        "Valor Devido": f"R$ {v_devido:.2f}", 
+                        "Valor Pago": f"R$ {v_pago:.2f}", 
+                        "Base Cálculo": "R$ 0.00", 
+                        "Fator CM": "-", 
+                        "Atualizado": "QUITADO", 
+                        "Juros": "-", 
+                        "TOTAL": "R$ 0.00", 
+                        "_num": 0.0
+                    })
+                # Cenario 2: Existe Dívida
                 else:
                     fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
                     if fator is None:
                         erro_flag = True
-                        break
+                        break # Para o loop se o BCB falhar
+                        
                     v_corr = saldo_base * fator
                     juros = 0.0
                     dias = (data_calculo - venc).days
                     if dias > 0: juros = v_corr * (0.01/30 * dias)
                     total_linha = v_corr + juros
-                    res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:,.2f}", "Valor Pago": f"R$ {v_pago:,.2f}", "Base Cálculo": f"R$ {saldo_base:,.2f}", "Fator CM": f"{fator:.5f}", "Atualizado": f"R$ {v_corr:,.2f}", "Juros": f"R$ {juros:,.2f}", "TOTAL": f"R$ {total_linha:,.2f}", "_num": total_linha})
+                    
+                    res_p.append({
+                        "Vencimento": venc.strftime("%d/%m/%Y"), 
+                        "Valor Devido": f"R$ {v_devido:,.2f}", 
+                        "Valor Pago": f"R$ {v_pago:,.2f}", 
+                        "Base Cálculo": f"R$ {saldo_base:,.2f}", 
+                        "Fator CM": f"{fator:.5f}", 
+                        "Atualizado": f"R$ {v_corr:,.2f}", 
+                        "Juros": f"R$ {juros:,.2f}", 
+                        "TOTAL": f"R$ {total_linha:,.2f}", 
+                        "_num": total_linha
+                    })
             
+            # --- ÁREA DA CORREÇÃO DO ERRO KEYERROR ---
             if erro_flag:
-                st.error("Erro de conexão com BCB. Não foi possível calcular todos os meses.")
+                st.error("Erro de conexão com BCB. Não foi possível calcular.")
                 st.stop()
+            
+            if not res_p:
+                # Se a lista estiver vazia (nenhuma linha válida), mostramos aviso e NÃO calculamos soma
+                st.warning("Nenhuma linha válida encontrada para cálculo. Verifique as datas e valores na tabela.")
+                st.session_state.total_pensao = 0.0
+                st.session_state.df_pensao_final = pd.DataFrame() # DataFrame vazio limpo
             else:
+                # Se tem dados, cria o DF e soma
                 st.session_state.df_pensao_final = pd.DataFrame(res_p)
-                st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
+                # Verifica se a coluna _num existe antes de somar (Proteção extra)
+                if "_num" in st.session_state.df_pensao_final.columns:
+                    st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
+                else:
+                    st.session_state.total_pensao = 0.0
+                    
                 st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
-                st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
+                
+                # Exibe tabela sem a coluna oculta _num
+                cols_to_show = [c for c in st.session_state.df_pensao_final.columns if c != "_num"]
+                st.dataframe(st.session_state.df_pensao_final[cols_to_show], use_container_width=True, hide_index=True)
+        else:
+            st.warning("Gere a tabela primeiro (Botão 1) antes de calcular.")
 
 # ==============================================================================
 # ABA 4 - REAJUSTE ALUGUEL (COM TRAVAS DE ERRO)
