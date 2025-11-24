@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.2", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 2.3", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -22,8 +22,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.2 - Relatórios Periciais Auditáveis")
-st.markdown("Sistema de Cálculos Judiciais com **Memória de Cálculo Detalhada** e **Metodologia Explícita**.")
+st.title("⚖️ CalcJus PRO 2.3 - Sistema Pericial Completo")
+st.markdown("Cálculos Judiciais Auditáveis + **Calculadora de Reajuste de Aluguel**.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -168,7 +168,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
         pdf.cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS EM ABERTO)", 0, 1, fill=True)
         
         pdf.set_font("Arial", "B", 7)
-        # Colunas ajustadas para a nova lógica
         headers_pen = [("Vencimento", 25), ("Devido", 25), ("Pago", 25), ("Base Cálculo", 25), ("Fator CM", 20), ("Atualizado", 25), ("Juros", 25), ("TOTAL", 30)]
         for h, w in headers_pen: pdf.cell(w, 6, h, 1, 0, 'C')
         pdf.ln()
@@ -179,7 +178,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, totais, config):
             pdf.cell(25, 6, str(row['Valor Devido']), 1, 0, 'C')
             pdf.cell(25, 6, str(row['Valor Pago']), 1, 0, 'C')
             
-            # Destaque para a Base de Cálculo
             pdf.set_font("Arial", "B", 7)
             pdf.cell(25, 6, str(row['Base Cálculo']), 1, 0, 'C')
             pdf.set_font("Arial", "", 7)
@@ -261,10 +259,11 @@ if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input =
 if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
 if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
 
-tab1, tab2, tab3, tab4 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "📊 PDF Final"])
+# ADIÇÃO DA NOVA ABA 5
+tab1, tab2, tab3, tab5, tab4 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Aluguel", "📊 PDF Final"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO COM AUDITORIA
+# ABA 1 - INDENIZAÇÃO
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Lucros Cessantes")
@@ -304,11 +303,9 @@ with tab1:
 
     if st.button("Calcular Indenização", type="primary", use_container_width=True):
         lista_ind = []
-        
         with st.status("Processando dados...", expanded=True) as status:
             datas_vencimento = []
             valores_base = []
-            
             if metodo_calculo == "Ciclo Mensal Fechado":
                  t_date = inicio_atraso
                  while t_date < fim_atraso:
@@ -331,7 +328,6 @@ with tab1:
                     curr_date = ultimo_dia_mes + timedelta(days=1)
 
             st.write(f"Consultando APIs do Banco Central ({len(datas_vencimento)} parcelas)...")
-            
             for i, venc in enumerate(datas_vencimento):
                 val_base = valores_base[i]
                 audit_fator_cm = "-"
@@ -387,17 +383,11 @@ with tab1:
                         v_fase1 = base_selic 
 
                 lista_ind.append({
-                    "Vencimento": venc.strftime("%d/%m/%Y"), 
-                    "Valor Orig.": f"R$ {val_base:,.2f}", 
-                    "Audit Fator CM": audit_fator_cm,
-                    "V. Corrigido Puro": f"R$ {v_corrigido_puro:,.2f}", 
-                    "Audit Juros %": audit_juros_perc,
-                    "Audit Fator SELIC": audit_fator_selic,
-                    "Total Fase 1": v_base_selic_str, 
-                    "TOTAL": f"R$ {total_final:,.2f}", 
-                    "_num": total_final
+                    "Vencimento": venc.strftime("%d/%m/%Y"), "Valor Orig.": f"R$ {val_base:,.2f}", 
+                    "Audit Fator CM": audit_fator_cm, "V. Corrigido Puro": f"R$ {v_corrigido_puro:,.2f}", 
+                    "Audit Juros %": audit_juros_perc, "Audit Fator SELIC": audit_fator_selic,
+                    "Total Fase 1": v_base_selic_str, "TOTAL": f"R$ {total_final:,.2f}", "_num": total_final
                 })
-            
             status.update(label="Cálculo Concluído!", state="complete", expanded=False)
         
         df = pd.DataFrame(lista_ind)
@@ -411,16 +401,11 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
-    st.markdown("Configure os parâmetros específicos para a verba honorária:")
-    
     col_h1, col_h2 = st.columns(2)
     v_h = col_h1.number_input("Valor Nominal (Honorários)", 1500.00)
     d_h = col_h2.date_input("Data Base (Fixação/Vencimento)", date(2023, 1, 1))
-    
     st.write("---")
-    
     regime_hon = st.radio("Regime de Atualização (Honorários):", ["1. Correção Monetária + Juros", "2. SELIC Pura"], horizontal=True)
-    
     col_opt1, col_opt2 = st.columns(2)
     indice_hon_sel = None
     aplicar_juros_hon = False
@@ -435,7 +420,6 @@ with tab2:
         total_hon = 0.0
         desc_audit = ""
         juros_txt = "N/A"
-        
         if "SELIC Pura" in regime_hon:
             f = buscar_fator_bcb(cod_selic, d_h, data_calculo)
             total_hon = v_h * f
@@ -455,7 +439,6 @@ with tab2:
             else:
                 juros_txt = "Não Aplicado"
             total_hon = v_corr + valor_juros
-            
         res = [{"Descrição": "Honorários Advocatícios", "Valor Orig.": f"R$ {v_h:,.2f}", "Audit Fator": desc_audit, "Juros": juros_txt, "TOTAL": f"R$ {total_hon:,.2f}", "_num": total_hon}]
         st.session_state.df_honorarios = pd.DataFrame(res)
         st.session_state.total_honorarios = total_hon
@@ -463,21 +446,19 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (CORRIGIDA)
+# ABA 3 - PENSÃO
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     st.info("ℹ️ A atualização incide apenas sobre o **Saldo Devedor Líquido** (Devido - Pago), evitando excesso de execução.")
-    
     col_p1, col_p2, col_p3 = st.columns(3)
     v_pensao_base = col_p1.number_input("Valor da Parcela Mensal", value=1000.00)
     dia_vencimento = col_p2.number_input("Dia de Vencimento", value=10, min_value=1, max_value=31)
-    
     col_d1, col_d2 = st.columns(2)
     ini_pensao = col_d1.date_input("Data Início (Primeira Parcela)", value=date(2023, 1, 1))
     fim_pensao = col_d2.date_input("Data Fim", value=date.today())
     
-    if st.button("1. Gerar Tabela Base", help="Cria uma lista de meses entre as datas selecionadas"):
+    if st.button("1. Gerar Tabela Base"):
         l = []
         dt_cursor = ini_pensao.replace(day=dia_vencimento) if dia_vencimento <= 28 else ini_pensao
         if dt_cursor < ini_pensao: dt_cursor += relativedelta(months=1)
@@ -486,7 +467,6 @@ with tab3:
             dt_cursor += relativedelta(months=1)
         st.session_state.df_pensao_input = pd.DataFrame(l)
 
-    st.write("👇 **Tabela de Lançamentos (Edite valores pagos ou adicione linhas):**")
     tabela_editada = st.data_editor(
         st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True,
         column_config={
@@ -505,49 +485,19 @@ with tab3:
                 bar.progress((i+1)/total_rows)
                 try:
                     venc = pd.to_datetime(r["Vencimento"]).date()
-                    v_devido = float(r["Valor Devido (R$)"])
-                    v_pago = float(r["Valor Pago (R$)"])
+                    v_devido, v_pago = float(r["Valor Devido (R$)"]), float(r["Valor Pago (R$)"])
                 except: continue
-                
-                # CÁLCULO CORRIGIDO: ABATIMENTO NA ORIGEM
                 saldo_base = v_devido - v_pago
-                
-                # Se pagou a mais ou igual, saldo é zero
                 if saldo_base <= 0:
-                    res_p.append({
-                        "Vencimento": venc.strftime("%d/%m/%Y"), 
-                        "Valor Devido": f"R$ {v_devido:,.2f}",
-                        "Valor Pago": f"R$ {v_pago:,.2f}",
-                        "Base Cálculo": f"R$ 0,00", # Sem dívida
-                        "Fator CM": "-",
-                        "Atualizado": "QUITADO", 
-                        "Juros": "-",
-                        "TOTAL": f"R$ 0,00",
-                        "_num": 0.0
-                    })
+                    res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:,.2f}", "Valor Pago": f"R$ {v_pago:,.2f}", "Base Cálculo": f"R$ 0,00", "Fator CM": "-", "Atualizado": "QUITADO", "Juros": "-", "TOTAL": f"R$ 0,00", "_num": 0.0})
                 else:
-                    # Atualiza apenas a diferença
                     fator = buscar_fator_bcb(codigo_indice_padrao, venc, data_calculo)
                     v_corr = saldo_base * fator
-                    
                     juros = 0.0
                     dias = (data_calculo - venc).days
                     if dias > 0: juros = v_corr * (0.01/30 * dias)
-                    
                     total_linha = v_corr + juros
-                    
-                    res_p.append({
-                        "Vencimento": venc.strftime("%d/%m/%Y"), 
-                        "Valor Devido": f"R$ {v_devido:,.2f}",
-                        "Valor Pago": f"R$ {v_pago:,.2f}",
-                        "Base Cálculo": f"R$ {saldo_base:,.2f}", # Mostra a base real
-                        "Fator CM": f"{fator:.5f}", 
-                        "Atualizado": f"R$ {v_corr:,.2f}", 
-                        "Juros": f"R$ {juros:,.2f}", 
-                        "TOTAL": f"R$ {total_linha:,.2f}", 
-                        "_num": total_linha
-                    })
-
+                    res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:,.2f}", "Valor Pago": f"R$ {v_pago:,.2f}", "Base Cálculo": f"R$ {saldo_base:,.2f}", "Fator CM": f"{fator:.5f}", "Atualizado": f"R$ {v_corr:,.2f}", "Juros": f"R$ {juros:,.2f}", "TOTAL": f"R$ {total_linha:,.2f}", "_num": total_linha})
             bar.empty()
             st.session_state.df_pensao_final = pd.DataFrame(res_p)
             st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
@@ -555,12 +505,45 @@ with tab3:
             st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 4 - RESUMO
+# ABA 5 - REAJUSTE DE ALUGUEL (NOVA)
+# ==============================================================================
+with tab5:
+    st.subheader("🏠 Reajuste Anual de Aluguel")
+    st.markdown("Calcula o índice acumulado dos últimos 12 meses (ou período similar) para reajuste de contratos.")
+    
+    col_a1, col_a2, col_a3 = st.columns(3)
+    val_aluguel = col_a1.number_input("Valor Atual do Aluguel", value=2500.00, step=50.0)
+    dt_reajuste = col_a2.date_input("Data de Aniversário/Reajuste", value=date.today())
+    # Dropdown que usa o mapa global mas permite seleção independente
+    idx_aluguel_nome = col_a3.selectbox("Índice de Reajuste", list(mapa_indices.keys()), index=1, help="Geralmente IGP-M ou IPCA")
+
+    if st.button("Calcular Novo Aluguel", type="primary"):
+        # Lógica: Pegar a data de reajuste e voltar 1 ano para pegar o acumulado
+        dt_inicio_12m = dt_reajuste - relativedelta(months=12)
+        cod_serie = mapa_indices[idx_aluguel_nome]
+        
+        with st.spinner("Consultando índices acumulados..."):
+            fator = buscar_fator_bcb(cod_serie, dt_inicio_12m, dt_reajuste)
+            
+        perc_acumulado = (fator - 1) * 100
+        novo_valor = val_aluguel * fator
+        diferenca = novo_valor - val_aluguel
+        
+        st.markdown("### Resultado do Reajuste")
+        c_res1, c_res2, c_res3 = st.columns(3)
+        c_res1.metric("Índice Acumulado (12m)", f"{perc_acumulado:.4f}%")
+        c_res2.metric("Aumento (R$)", f"R$ {diferenca:,.2f}")
+        c_res3.metric("Novo Aluguel", f"R$ {novo_valor:,.2f}")
+        
+        st.info(f"📅 **Período de Apuração:** {dt_inicio_12m.strftime('%d/%m/%Y')} a {dt_reajuste.strftime('%d/%m/%Y')} | **Índice:** {idx_aluguel_nome}")
+        st.caption("Nota: O cálculo considera a variação acumulada das séries mensais do Banco Central para o período de 12 meses encerrado na data informada.")
+
+# ==============================================================================
+# ABA 4 - RESUMO PDF
 # ==============================================================================
 with tab4:
     st.header("Resumo Global e Exportação")
     col_res1, col_res2 = st.columns([1, 2])
-    
     with col_res1:
         st.markdown("### Valores Consolidados")
         t1, t2, t3 = st.session_state.total_indenizacao, st.session_state.total_honorarios, st.session_state.total_pensao
@@ -580,9 +563,8 @@ with tab4:
     with col_res2:
         conf_pdf = {'multa_523': aplicar_multa_523, 'hon_523': aplicar_hon_523, 'metodo': metodo_calculo, 'indice_nome': indice_padrao_nome, 'data_calculo': data_calculo, 'regime_desc': st.session_state.regime_desc}
         tot_pdf = {'indenizacao': t1, 'honorarios': t2, 'pensao': t3, 'multa': mul, 'hon_exec': hon, 'final': fin}
-        
         if st.button("📄 Gerar PDF Oficial"):
-            if fin == 0: st.error("Realize pelo menos um cálculo antes de gerar o PDF.")
+            if fin == 0: st.error("Realize pelo menos um cálculo (Indenização, Honorários ou Pensão) antes de gerar o PDF de execução.")
             else:
                 pdf_bytes = gerar_pdf_relatorio(st.session_state.df_indenizacao, st.session_state.df_honorarios, st.session_state.df_pensao_final, tot_pdf, conf_pdf)
                 st.download_button(label="⬇️ Baixar Relatório PDF", data=pdf_bytes, file_name=f"Calculo_Juridico_{date.today().strftime('%Y%m%d')}.pdf", mime="application/pdf", type="primary")
