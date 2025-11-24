@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.0 (Estável)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.1", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -27,7 +27,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.0 - Versão Estável")
+st.title("⚖️ CalcJus PRO 3.1 - Versão Estável")
 st.markdown("Cálculos Judiciais: Indenização, Honorários e Pensão Alimentícia.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
@@ -510,17 +510,16 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (REVERTIDA PARA LAYOUT ORIGINAL + FIX ERROS)
+# ABA 3 - PENSÃO (VERSÃO ESTÁVEL E CONFIGURADA)
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     st.info("Cálculo de Dívida: O sistema abate o valor pago do original antes de aplicar juros/correção.")
     
-    # SELETOR DE ÍNDICE (ADICIONADO CONFORME PEDIDO)
+    # SELETOR DE ÍNDICE
     idx_pensao = st.selectbox("Índice para Correção da Pensão:", list(mapa_indices_completo.keys()), index=0)
     cod_idx_pensao = mapa_indices_completo[idx_pensao]
     
-    # CAMPOS DE DATA (ADICIONADOS E ORGANIZADOS CONFORME PEDIDO)
     col_d1, col_d2 = st.columns(2)
     ini_pensao = col_d1.date_input("Data Início", value=date(2023, 1, 1))
     fim_pensao = col_d2.date_input("Data Fim", value=date.today())
@@ -543,15 +542,20 @@ with tab3:
             dt_cursor += relativedelta(months=1)
         st.session_state.df_pensao_input = pd.DataFrame(l)
 
+    # EDITOR COM CONFIGURAÇÃO DE COLUNAS (BLINDAGEM CONTRA ERRO DE TIPO)
     tabela_editada = st.data_editor(
         st.session_state.df_pensao_input, 
         num_rows="dynamic", 
         hide_index=True, 
-        use_container_width=True
+        use_container_width=True,
+        column_config={
+            "Vencimento": st.column_config.DateColumn("Vencimento", format="DD/MM/YYYY"),
+            "Valor Devido (R$)": st.column_config.NumberColumn("Valor Devido (R$)", format="%.2f"),
+            "Valor Pago (R$)": st.column_config.NumberColumn("Valor Pago (R$)", format="%.2f"),
+        }
     )
     
     if st.button("2. Calcular Saldo Devedor"):
-        # Verificação se a tabela tem dados
         if tabela_editada is not None and not tabela_editada.empty:
             if st.session_state.simular_erro_bcb:
                  st.error("🚨 ERRO SIMULADO: Falha de rede.")
@@ -562,20 +566,26 @@ with tab3:
             
             for i, (index, r) in enumerate(tabela_editada.iterrows()):
                 try:
-                    # Tenta ler a data e valores
+                    # Leitura segura de dados
                     d_val = r["Vencimento"]
                     if pd.isna(d_val) or str(d_val).strip() == "": continue
                     
+                    # Converte para data (aceita string ou datetime)
                     venc = pd.to_datetime(d_val).date()
-                    v_devido = float(r["Valor Devido (R$)"])
-                    v_pago = float(r["Valor Pago (R$)"])
+                    
+                    # Função para limpar dinheiro (converter string '1.000,00' para float)
+                    def safe_float(x):
+                        if isinstance(x, (float, int)): return float(x)
+                        return float(str(x).replace('.', '').replace(',', '.'))
+                        
+                    v_devido = safe_float(r["Valor Devido (R$)"])
+                    v_pago = safe_float(r["Valor Pago (R$)"])
                 except:
                     continue
                 
                 saldo_base = v_devido - v_pago
                 
                 if saldo_base <= 0:
-                    # Quitado
                     res_p.append({
                         "Vencimento": venc.strftime("%d/%m/%Y"), 
                         "Valor Devido": f"R$ {v_devido:.2f}", 
@@ -588,7 +598,6 @@ with tab3:
                         "_num": 0.0
                     })
                 else:
-                    # Devedor
                     fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
                     if fator is None:
                         erro_con = True
@@ -615,18 +624,16 @@ with tab3:
             if erro_con:
                 st.error("Erro ao conectar com BCB. Verifique sua internet.")
             elif not res_p:
-                st.warning("Nenhum dado válido para calcular.")
+                st.warning("Nenhum dado válido encontrado para calcular. Verifique as datas e valores.")
                 st.session_state.total_pensao = 0.0
             else:
                 st.session_state.df_pensao_final = pd.DataFrame(res_p)
-                # SOMA PROTEGIDA
                 if "_num" in st.session_state.df_pensao_final.columns:
                     st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
                 else:
                     st.session_state.total_pensao = 0.0
                 
                 st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
-                # Exibe sem a coluna oculta
                 cols_vis = [c for c in st.session_state.df_pensao_final.columns if c != "_num"]
                 st.dataframe(st.session_state.df_pensao_final[cols_vis], use_container_width=True, hide_index=True)
         else:
