@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.4 (Clean)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.5 (Visual)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -27,8 +27,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.4 - Versão Otimizada")
-st.markdown("Cálculos Judiciais: Interface limpa e direta.")
+st.title("⚖️ CalcJus PRO 3.5 - Visual Ajustado")
+st.markdown("Cálculos Judiciais: Ordem lógica das colunas corrigida.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
 if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
@@ -139,6 +139,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_fill_color(220, 230, 255)
         pdf.cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS GERAIS", 0, 1, fill=True)
         pdf.set_font("Arial", "B", 7)
+        # ORDEM AJUSTADA: Juros -> Total Fase 1 -> Fator SELIC -> Total Final
         cols = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), ("V. Corrigido", 25), ("Juros / Mora", 45), ("Total Fase 1", 25), ("Fator SELIC", 20), ("TOTAL FINAL", 30)]
         for txt, w in cols: pdf.cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
@@ -146,6 +147,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         for index, row in dados_ind.iterrows():
             j_detalhe = str(row.get('Audit Juros %', '-'))
             if len(j_detalhe) > 35: j_detalhe = j_detalhe[:32] + "..."
+            # ORDEM DOS DADOS AJUSTADA PARA BATER COM AS COLUNAS
             data_row = [str(row['Vencimento']), str(row['Valor Orig.']), str(row.get('Audit Fator CM', '-')), str(row.get('V. Corrigido Puro', '-')), j_detalhe, str(row.get('Total Fase 1', '-')), str(row.get('Audit Fator SELIC', '-')), str(row['TOTAL'])]
             col_w = [c[1] for c in cols]
             for i, datum in enumerate(data_row):
@@ -301,7 +303,7 @@ else:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (DATAS BRASILEIRAS)
+# ABA 1 - INDENIZAÇÃO (ORDEM DAS COLUNAS CORRIGIDA)
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
@@ -454,9 +456,9 @@ with tab1:
                     "Valor Orig.": formatar_moeda(val_base), 
                     "Audit Fator CM": audit_fator_cm, 
                     "V. Corrigido Puro": formatar_moeda(v_corrigido_puro), 
-                    "Audit Juros %": audit_juros_perc, 
-                    "Audit Fator SELIC": audit_fator_selic,
-                    "Total Fase 1": v_base_selic_str, 
+                    "Audit Juros %": audit_juros_perc,
+                    "Total Fase 1": v_base_selic_str,  # TROQUEI A ORDEM AQUI
+                    "Audit Fator SELIC": audit_fator_selic, # SELIC DEPOIS DA FASE 1
                     "TOTAL": formatar_moeda(total_final), 
                     "_num": total_final
                 })
@@ -466,10 +468,11 @@ with tab1:
         st.session_state.df_indenizacao = df
         st.session_state.total_indenizacao = df["_num"].sum()
         st.success(f"Total Dívida: {formatar_moeda(st.session_state.total_indenizacao)}")
+        # Exibe na ordem correta do dicionário
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (SIMPLIFICADA)
+# ABA 2 - HONORÁRIOS
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
