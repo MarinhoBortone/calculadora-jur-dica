@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.5 (Visual)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 3.6 (Audit)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -27,8 +27,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.5 - Visual Ajustado")
-st.markdown("Cálculos Judiciais: Ordem lógica das colunas corrigida.")
+st.title("⚖️ CalcJus PRO 3.6 - Versão Auditoria")
+st.markdown("Cálculos Judiciais com **Memorial Descritivo Detalhado**.")
 
 # --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
 if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
@@ -50,6 +50,11 @@ def formatar_moeda(valor):
         return texto
     except:
         return "R$ 0,00"
+
+def formatar_data_br(dt):
+    if isinstance(dt, (date, datetime)):
+        return dt.strftime("%d/%m/%Y")
+    return "-"
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -108,38 +113,69 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     if tem_execucao and not tem_aluguel: titulo = "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO"
     elif not tem_execucao and tem_aluguel: titulo = "MEMÓRIA DE CÁLCULO - REAJUSTE CONTRATUAL"
     
+    # Título Principal
     pdf.set_font("Arial", "B", 14)
     pdf.set_fill_color(230, 230, 230)
     pdf.cell(0, 10, titulo, 0, 1, "C", fill=True)
     pdf.ln(5)
     
+    # 1. PARÂMETROS E METODOLOGIA
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(245, 245, 245)
-    pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA", 0, 1, fill=True)
-    pdf.ln(1)
+    pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA (MEMORIAL DESCRITIVO)", 0, 1, fill=True)
+    pdf.ln(2)
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
     regime_desc = config.get('regime_desc', '-') 
     
     pdf.set_font("Arial", "", 9)
-    texto_metodologia = f"DATA BASE DO CÁLCULO: {dt_calc}\n"
+    
+    # --- CONSTRUÇÃO DO TEXTO EXPLICATIVO (AUDITORIA) ---
+    texto_explicativo = f"DATA BASE DO CÁLCULO: {dt_calc}\n\n"
     
     if tem_execucao:
-        texto_metodologia += (
-            f"CRITÉRIO INDENIZAÇÃO/DÍVIDA: {regime_desc}\n"
-            f"JUROS DE MORA: 1% a.m. simples (Pro-Rata Die) ou conforme SELIC.\n"
-            f"FONTE DOS ÍNDICES: Banco Central do Brasil (SGS).\n"
-        )
+        tipo_regime = config.get('tipo_regime', 'Padrao')
         
-    pdf.multi_cell(0, 5, texto_metodologia)
+        if "Misto" in tipo_regime:
+            dt_corte = formatar_data_br(config.get('data_corte'))
+            dt_cit = formatar_data_br(config.get('data_citacao'))
+            indice = config.get('indice_nome', 'Índice')
+            
+            texto_explicativo += (
+                f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
+                f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
+                f"1. FASE PRÉ-SELIC (Do vencimento até {dt_corte}): O valor original foi corrigido monetariamente pelo índice '{indice}'. "
+                f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit}.\n"
+                f"2. FASE SELIC (De {dt_corte} até {dt_calc}): O montante total da Fase 1 (Principal Corrigido + Juros) foi consolidado e, a partir desta data, "
+                f"atualizado exclusivamente pela variação da Taxa SELIC acumulada, a qual engloba correção monetária e juros de mora, vedada a cumulação com outros índices."
+            )
+        elif "SELIC Pura" in tipo_regime:
+            texto_explicativo += (
+                f"METODOLOGIA APLICADA (Taxa SELIC):\n"
+                f"O valor original foi atualizado exclusivamente pela Taxa SELIC acumulada desde a data do vencimento (ou evento danoso) até a data base atual. "
+                f"Conforme jurisprudência do STJ e EC 113/21, a Taxa SELIC engloba juros de mora e correção monetária em um único fator."
+            )
+        else:
+            # Índice + Juros padrão
+            indice = config.get('indice_nome', 'Índice')
+            dt_cit = formatar_data_br(config.get('data_citacao'))
+            texto_explicativo += (
+                f"METODOLOGIA APLICADA (Padrão Cível):\n"
+                f"1. CORREÇÃO MONETÁRIA: O valor original foi atualizado pelo índice '{indice}' desde a data do vencimento até a data base.\n"
+                f"2. JUROS DE MORA: Foram aplicados juros moratórios de 1% ao mês (juros simples), calculados de forma pro-rata die (proporcional aos dias), "
+                f"incidindo sobre o valor corrigido, contados a partir de {dt_cit}."
+            )
+            
+    pdf.multi_cell(0, 5, texto_explicativo)
     pdf.ln(5)
 
+    # 2. TABELA DE INDENIZAÇÃO
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
         pdf.cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS GERAIS", 0, 1, fill=True)
         pdf.set_font("Arial", "B", 7)
-        # ORDEM AJUSTADA: Juros -> Total Fase 1 -> Fator SELIC -> Total Final
+        # ORDEM CORRIGIDA
         cols = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), ("V. Corrigido", 25), ("Juros / Mora", 45), ("Total Fase 1", 25), ("Fator SELIC", 20), ("TOTAL FINAL", 30)]
         for txt, w in cols: pdf.cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
@@ -147,7 +183,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         for index, row in dados_ind.iterrows():
             j_detalhe = str(row.get('Audit Juros %', '-'))
             if len(j_detalhe) > 35: j_detalhe = j_detalhe[:32] + "..."
-            # ORDEM DOS DADOS AJUSTADA PARA BATER COM AS COLUNAS
             data_row = [str(row['Vencimento']), str(row['Valor Orig.']), str(row.get('Audit Fator CM', '-')), str(row.get('V. Corrigido Puro', '-')), j_detalhe, str(row.get('Total Fase 1', '-')), str(row.get('Audit Fator SELIC', '-')), str(row['TOTAL'])]
             col_w = [c[1] for c in cols]
             for i, datum in enumerate(data_row):
@@ -158,6 +193,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(0, 7, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
+    # 3. HONORÁRIOS
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
@@ -178,6 +214,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(0, 7, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
+    # 4. PENSÃO
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
@@ -204,6 +241,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
+    # 5. REAJUSTE ALUGUEL
     if tem_aluguel:
         pdf.ln(5)
         pdf.set_font("Arial", "B", 10)
@@ -225,6 +263,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(100, 10, f"{formatar_moeda(da['novo_valor'])}", 1, 1, 'R')
         pdf.ln(3)
 
+    # RESUMO FINAL
     if tem_execucao:
         pdf.ln(5)
         pdf.set_draw_color(0, 0, 0)
@@ -249,7 +288,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         
     pdf.ln(5)
     pdf.set_font("Arial", "I", 7)
-    pdf.multi_cell(0, 4, "Aviso Legal: Cálculo estimado com base em séries do BCB.")
+    pdf.multi_cell(0, 4, "Aviso Legal: Cálculo estimado com base em séries do BCB. Este demonstrativo serve como base para peticionamento, sujeito à conferência.")
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- MAPA DE ÍNDICES GLOBAL ---
@@ -270,7 +309,6 @@ cod_selic = 4390
 # MENU LATERAL COM MODO DESENVOLVEDOR
 # ==============================================================================
 st.sidebar.header("Parâmetros Globais")
-# DATA NO FORMATO BRASILEIRO
 data_calculo = st.sidebar.date_input("Data do Cálculo", value=date.today(), format="DD/MM/YYYY")
 
 st.sidebar.divider()
@@ -303,7 +341,7 @@ else:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (ORDEM DAS COLUNAS CORRIGIDA)
+# ABA 1 - INDENIZAÇÃO
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
@@ -315,7 +353,6 @@ with tab1:
     
     st.write("---")
     c4, c5 = st.columns(2)
-    # FORMATO DD/MM/YYYY
     inicio_atraso = c4.date_input("Início da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
     fim_atraso = c5.date_input("Fim da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
     
@@ -338,7 +375,6 @@ with tab1:
     if "1. Índice" in regime_tipo:
         indice_selecionado_ind = st.selectbox("Selecione o Índice de Correção:", list(mapa_indices_completo.keys()))
         codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
-        # FORMATO DD/MM/YYYY
         data_citacao_ind = st.date_input("Data Citação (Início Juros)", value=inicio_atraso, format="DD/MM/YYYY")
         st.session_state.regime_desc = f"{indice_selecionado_ind} + Juros 1% a.m."
         
@@ -346,7 +382,6 @@ with tab1:
         c_mix_ind, c_mix_dt = st.columns(2)
         indice_selecionado_ind = c_mix_ind.selectbox("Índice Fase 1 (Pré-SELIC):", list(mapa_indices_completo.keys()))
         codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
-        # FORMATO DD/MM/YYYY
         data_citacao_ind = c_mix_dt.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
         data_corte_selic = st.date_input("Data de Corte (Início SELIC)", value=date(2021, 12, 9), format="DD/MM/YYYY")
         st.session_state.regime_desc = f"Misto ({indice_selecionado_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
@@ -457,8 +492,8 @@ with tab1:
                     "Audit Fator CM": audit_fator_cm, 
                     "V. Corrigido Puro": formatar_moeda(v_corrigido_puro), 
                     "Audit Juros %": audit_juros_perc,
-                    "Total Fase 1": v_base_selic_str,  # TROQUEI A ORDEM AQUI
-                    "Audit Fator SELIC": audit_fator_selic, # SELIC DEPOIS DA FASE 1
+                    "Total Fase 1": v_base_selic_str,  
+                    "Audit Fator SELIC": audit_fator_selic,
                     "TOTAL": formatar_moeda(total_final), 
                     "_num": total_final
                 })
@@ -468,7 +503,6 @@ with tab1:
         st.session_state.df_indenizacao = df
         st.session_state.total_indenizacao = df["_num"].sum()
         st.success(f"Total Dívida: {formatar_moeda(st.session_state.total_indenizacao)}")
-        # Exibe na ordem correta do dicionário
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
@@ -478,7 +512,6 @@ with tab2:
     st.subheader("Cálculo de Honorários")
     col_h1, col_h2 = st.columns(2)
     v_h = col_h1.number_input("Valor Honorários", value=1500.00, min_value=0.0, step=0.01, format="%.2f")
-    # FORMATO DD/MM/YYYY
     d_h = col_h2.date_input("Data Base", date(2023, 1, 1), format="DD/MM/YYYY")
     
     st.write("---")
@@ -526,18 +559,16 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (DATAS BRASILEIRAS)
+# ABA 3 - PENSÃO
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     st.info("Cálculo de Dívida: O sistema abate o valor pago do original antes de aplicar juros/correção.")
     
-    # SELETOR DE ÍNDICE
     idx_pensao = st.selectbox("Índice para Correção da Pensão:", list(mapa_indices_completo.keys()), index=0)
     cod_idx_pensao = mapa_indices_completo[idx_pensao]
     
     col_d1, col_d2 = st.columns(2)
-    # FORMATO DD/MM/YYYY
     ini_pensao = col_d1.date_input("Data Início", value=date(2023, 1, 1), format="DD/MM/YYYY")
     fim_pensao = col_d2.date_input("Data Fim", value=date.today(), format="DD/MM/YYYY")
 
@@ -559,7 +590,6 @@ with tab3:
             dt_cursor += relativedelta(months=1)
         st.session_state.df_pensao_input = pd.DataFrame(l)
 
-    # EDITOR COM CONFIGURAÇÃO DE COLUNAS (FORMATO DD/MM/YYYY)
     tabela_editada = st.data_editor(
         st.session_state.df_pensao_input, 
         num_rows="dynamic", 
@@ -583,7 +613,6 @@ with tab3:
             
             for i, (index, r) in enumerate(tabela_editada.iterrows()):
                 try:
-                    # Leitura segura de dados
                     d_val = r["Vencimento"]
                     if pd.isna(d_val) or str(d_val).strip() == "": continue
                     
@@ -655,13 +684,12 @@ with tab3:
             st.warning("Gere a tabela primeiro.")
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL (DATAS BRASILEIRAS)
+# ABA 4 - REAJUSTE ALUGUEL
 # ==============================================================================
 with tab4:
     st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
     c_alug1, c_alug2, c_alug3 = st.columns(3)
     val_atual_aluguel = c_alug1.number_input("Valor Atual do Aluguel", value=2000.00, step=50.0)
-    # FORMATO DD/MM/YYYY
     dt_reajuste_aluguel = c_alug2.date_input("Data do Reajuste (Aniversário)", value=date.today(), format="DD/MM/YYYY")
     idx_aluguel = c_alug3.selectbox("Índice de Reajuste", list(mapa_indices_completo.keys()), index=1)
     
@@ -726,7 +754,18 @@ with tab5:
     else:
         st.warning("Nenhum cálculo realizado ainda.")
     
-    conf_pdf = {'multa_523': aplicar_multa_523, 'hon_523': aplicar_hon_523, 'metodo': metodo_calculo, 'data_calculo': data_calculo, 'regime_desc': st.session_state.regime_desc}
+    # Preparação dos Dados para o PDF (COM PASSAGEM DE PARÂMETROS EXTRAS)
+    conf_pdf = {
+        'multa_523': aplicar_multa_523, 
+        'hon_523': aplicar_hon_523, 
+        'metodo': metodo_calculo, 
+        'data_calculo': data_calculo, 
+        'regime_desc': st.session_state.regime_desc,
+        'tipo_regime': regime_tipo,
+        'indice_nome': indice_selecionado_ind if "1. Índice" in regime_tipo or "3. Misto" in regime_tipo else "SELIC",
+        'data_corte': data_corte_selic if "3. Misto" in regime_tipo else None,
+        'data_citacao': data_citacao_ind if "1. Índice" in regime_tipo or "3. Misto" in regime_tipo else None
+    }
     tot_pdf = {'indenizacao': t1, 'honorarios': t2, 'pensao': t3, 'multa': mul, 'hon_exec': hon, 'final': fin}
     
     if st.button("📄 Gerar PDF Inteligente"):
