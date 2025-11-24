@@ -83,14 +83,15 @@ def formatar_moeda(valor):
 def formatar_decimal_str(valor):
     return f"{valor:.6f}"
 
-# --- 4. CONEXÃO BCB ---
+# --- 4. CONEXÃO BCB OTIMIZADA (DATAFRAME CACHE) ---
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
+def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
+    """Baixa a série inteira e retorna um DataFrame pronto para cálculo."""
     if st.session_state.simular_erro_bcb: return None
     if data_fim <= data_inicio or data_inicio > date.today():
-        return Decimal('1.000000')
-    
+        return pd.DataFrame() # Retorna vazio se datas inválidas
+
     d1 = data_inicio.strftime("%d/%m/%Y")
     d2 = data_fim.strftime("%d/%m/%Y")
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados?formato=json&dataInicial={d1}&dataFinal={d2}"
@@ -103,26 +104,47 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     try:
         response = session.get(url, timeout=10)
         if response.status_code == 200:
-            try:
-                dados = response.json()
-            except:
-                return None 
-
-            fator = Decimal('1.0')
-            for item in dados:
-                try:
-                    val_raw = item['valor']
-                    if isinstance(val_raw, str):
-                        val_raw = val_raw.replace(',', '.')
-                    fator *= (Decimal('1') + (Decimal(val_raw) / Decimal('100')))
-                except:
-                    continue
-            return fator
-        return None
+            dados = response.json()
+            if not dados: return pd.DataFrame()
+            
+            # Processamento em lote (muito mais rápido)
+            df = pd.DataFrame(dados)
+            # Converte data string para objeto date
+            df['data_dt'] = pd.to_datetime(df['data'], format='%d/%m/%Y').dt.date
+            
+            # Prepara o fator multiplicativo decimal: 0.5% vira 1.005
+            def converter_fator(x):
+                val_str = x.replace(',', '.') if isinstance(x, str) else str(x)
+                return Decimal('1') + (Decimal(val_str) / Decimal('100'))
+            
+            df['fator_multi'] = df['valor'].apply(converter_fator)
+            return df[['data_dt', 'fator_multi']]
+        return pd.DataFrame()
     except Exception:
-        return None
+        return pd.DataFrame()
 
-# --- 5. GERAÇÃO DE PDF (COM CORREÇÃO DE LARGURA DE COLUNAS) ---
+def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
+    """Calcula o produto acumulado filtrando o DataFrame localmente."""
+    if df_serie is None or df_serie.empty: return None
+    
+    # Filtra período: Data da série >= Vencimento E Data da série <= Data Cálculo
+    mask = (df_serie['data_dt'] >= dt_ini) & (df_serie['data_dt'] <= dt_fim)
+    subset = df_serie.loc[mask]
+    
+    if subset.empty: return None
+    
+    fator = Decimal('1.0')
+    for val in subset['fator_multi']:
+        fator *= val
+    return fator
+
+# Wrapper para manter compatibilidade com Tab 2, 4 e chamadas isoladas
+def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
+    df = obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim)
+    if df is None or df.empty: return None
+    return calcular_fator_memoria(df, data_inicio, data_fim)
+
+# --- 5. GERAÇÃO DE PDF ---
 class PDFRelatorio(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
@@ -193,15 +215,14 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         
         # --- LARGURAS CORRIGIDAS ---
         if "Misto" in tipo_regime:
-            # Colunas reorganizadas e Fator SELIC aumentado para 45mm
             headers = [
                 ("Vencimento", 25), 
                 ("Valor Orig.", 25), 
                 ("Fator CM", 22), 
                 ("V. Corrigido", 28), 
                 ("Juros F1", 25),
-                ("Subtotal F1", 30),   # Nova coluna de controle
-                ("Fator SELIC", 45),   # AUMENTADO para caber o texto "(S/ Princ.)"
+                ("Subtotal F1", 30),   
+                ("Fator SELIC", 45),   
                 ("TOTAL", 35)
             ]
             campos = ['Vencimento', 'Valor Orig.', 'Audit Fator CM', 'V. Corrigido Puro', 
@@ -412,7 +433,7 @@ with tab1:
         }
 
         lista_resultados = []
-        with st.status("Processando dados e conectando ao BCB...", expanded=True) as status:
+        with st.status("Processando dados e conectando ao BCB (Modo Otimizado)...", expanded=True) as status:
             datas_vencimento = []
             if inicio_atraso == fim_atraso:
                 datas_vencimento = [inicio_atraso]
@@ -427,9 +448,24 @@ with tab1:
                     except ValueError:
                         curr = prox_mes + relativedelta(day=31)
                     if curr > fim_atraso: break
+            
+            # --- OTIMIZAÇÃO: DOWNLOAD PRÉVIO ---
+            dt_minima_api = min(datas_vencimento)
+            
+            df_indice_principal = pd.DataFrame()
+            if cod_ind_escolhido:
+                status.write(f"Baixando série histórica {indice_sel_ind}...")
+                df_indice_principal = obter_dados_bcb_cache(cod_ind_escolhido, dt_minima_api, data_calculo)
+            
+            df_selic_cache = pd.DataFrame()
+            if "SELIC" in regime_tipo or "Misto" in regime_tipo:
+                status.write("Baixando série histórica SELIC...")
+                dt_inicio_selic = data_corte_selic if data_corte_selic else dt_minima_api
+                if dt_inicio_selic > dt_minima_api: dt_inicio_selic = dt_minima_api
+                df_selic_cache = obter_dados_bcb_cache(COD_SELIC, dt_inicio_selic, data_calculo)
+            # -----------------------------------
 
             for venc in datas_vencimento:
-                # Inicializa colunas para evitar erro no PDF se alguma ficar vazia
                 linha = {
                     "Vencimento": venc.strftime("%d/%m/%Y"),
                     "Valor Orig.": formatar_moeda(val_mensal),
@@ -443,7 +479,7 @@ with tab1:
 
                 # REGIME 1: PADRÃO
                 if "1. Índice" in regime_tipo:
-                    fator = buscar_fator_bcb(cod_ind_escolhido, venc, data_calculo)
+                    fator = calcular_fator_memoria(df_indice_principal, venc, data_calculo)
                     if fator:
                         v_corrigido = val_mensal * fator
                         linha["Audit Fator CM"] = formatar_decimal_str(fator)
@@ -462,16 +498,16 @@ with tab1:
 
                 # REGIME 2: SELIC PURA
                 elif "2. Taxa SELIC" in regime_tipo:
-                    fator_selic = buscar_fator_bcb(COD_SELIC, venc, data_calculo)
+                    fator_selic = calcular_fator_memoria(df_selic_cache, venc, data_calculo)
                     if fator_selic:
                         total_final = val_mensal * fator_selic
                         linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
                 
-                # REGIME 3: MISTO (LÓGICA AJUSTADA PARA O NOVO PDF)
+                # REGIME 3: MISTO
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
                         # Fase SELIC Pura (pós corte)
-                        fator_selic = buscar_fator_bcb(COD_SELIC, venc, data_calculo)
+                        fator_selic = calcular_fator_memoria(df_selic_cache, venc, data_calculo)
                         if fator_selic:
                             total_final = val_mensal * fator_selic
                             linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
@@ -479,7 +515,7 @@ with tab1:
                             linha["Audit Juros %"] = "-"
                     else:
                         # Fase 1: Correção
-                        f_fase1 = buscar_fator_bcb(cod_ind_escolhido, venc, data_corte_selic)
+                        f_fase1 = calcular_fator_memoria(df_indice_principal, venc, data_corte_selic)
                         if f_fase1:
                             v_corr_f1 = val_mensal * f_fase1
                             linha["Audit Fator CM"] = f"{f_fase1:.6f}"
@@ -494,18 +530,15 @@ with tab1:
                             else:
                                 juros_f1 = Decimal('0.00')
                             
-                            # Subtotal Fase 1 (para o PDF)
                             total_fase1 = v_corr_f1 + juros_f1
                             linha["Subtotal F1"] = formatar_moeda(total_fase1)
 
-                            # Fase 2: SELIC apenas sobre o Principal
-                            f_selic_f2 = buscar_fator_bcb(COD_SELIC, data_corte_selic, data_calculo)
+                            # Fase 2: SELIC sobre o Principal
+                            f_selic_f2 = calcular_fator_memoria(df_selic_cache, data_corte_selic, data_calculo)
                             if f_selic_f2:
                                 princ_atualizado = v_corr_f1 * f_selic_f2
                                 linha["Audit Fator SELIC"] = f"{f_selic_f2:.6f}"
                                 linha["Principal Atualizado"] = formatar_moeda(princ_atualizado)
-                                
-                                # Total = Principal (com Selic) + Juros da Fase 1
                                 total_final = princ_atualizado + juros_f1
 
                 linha["TOTAL"] = formatar_moeda(total_final)
