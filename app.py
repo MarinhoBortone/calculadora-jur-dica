@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.7 (Safe)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 2.9 (Final)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -19,19 +19,42 @@ st.markdown("""
     .stAlert {
         padding: 0.5rem;
     }
+    /* Destaque para área de dev */
+    .dev-mode {
+        border: 1px dashed red;
+        padding: 10px;
+        border-radius: 5px;
+        background-color: #fff0f0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.7 - Sistema Modular Seguro")
-st.markdown("Cálculos Judiciais com **Validação de Conexão BCB** integrada.")
+st.title("⚖️ CalcJus PRO 2.9 - Sistema Validado")
+st.markdown("Cálculos Judiciais com **Lógica de Dívida Única** e **Proteção de Rede**.")
+
+# --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
+if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
+if 'total_indenizacao' not in st.session_state: st.session_state.total_indenizacao = 0.0
+if 'total_honorarios' not in st.session_state: st.session_state.total_honorarios = 0.0
+if 'total_pensao' not in st.session_state: st.session_state.total_pensao = 0.0
+if 'df_indenizacao' not in st.session_state: st.session_state.df_indenizacao = pd.DataFrame()
+if 'df_honorarios' not in st.session_state: st.session_state.df_honorarios = pd.DataFrame()
+if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input = pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"])
+if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
+if 'dados_aluguel' not in st.session_state: st.session_state.dados_aluguel = None 
+if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     """
-    Busca o fator acumulado de correção monetária na API do Banco Central.
-    Retorna None em caso de erro para evitar cálculos falsos.
+    Busca o fator acumulado.
+    INCLUI: Checagem do Modo Desenvolvedor para simular falhas.
     """
+    # --- MODO DE TESTE: SIMULAÇÃO DE ERRO ---
+    if st.session_state.simular_erro_bcb:
+        return None # Simula falha forçada
+
     if data_fim <= data_inicio: return 1.0
     if data_inicio > date.today(): return 1.0
     
@@ -40,7 +63,7 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados?formato=json&dataInicial={d1}&dataFinal={d2}"
     
     try:
-        response = requests.get(url, timeout=10) # Timeout de 10s
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             dados = response.json()
             fator = 1.0
@@ -52,10 +75,8 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
                     continue
             return fator
         else:
-            # Erro na resposta da API (ex: 404, 500)
             return None
     except Exception as e:
-        # Erro de conexão ou timeout
         return None
 
 # --- CLASSE PDF PROFISSIONAL ---
@@ -80,20 +101,17 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.alias_nb_pages()
     pdf.add_page()
     
-    # TÍTULO INTELIGENTE
     tem_execucao = (totais['final'] > 0)
     tem_aluguel = (dados_aluguel is not None)
     titulo = "RELATÓRIO GERAL"
     if tem_execucao and not tem_aluguel: titulo = "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO"
     elif not tem_execucao and tem_aluguel: titulo = "MEMÓRIA DE CÁLCULO - REAJUSTE CONTRATUAL"
     
-    # IDENTIFICAÇÃO
     pdf.set_font("Arial", "B", 14)
     pdf.set_fill_color(230, 230, 230)
     pdf.cell(0, 10, titulo, 0, 1, "C", fill=True)
     pdf.ln(5)
     
-    # METODOLOGIA
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(245, 245, 245)
     pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA", 0, 1, fill=True)
@@ -115,7 +133,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.multi_cell(0, 5, texto_metodologia)
     pdf.ln(5)
 
-    # INDENIZAÇÃO
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
@@ -138,7 +155,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(0, 7, f"Subtotal Indenização: R$ {totais['indenizacao']:,.2f}", 0, 1, 'R')
         pdf.ln(3)
 
-    # HONORÁRIOS
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
@@ -159,7 +175,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(0, 7, f"Subtotal Honorários: R$ {totais['honorarios']:,.2f}", 0, 1, 'R')
         pdf.ln(3)
 
-    # PENSÃO
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
@@ -186,7 +201,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.cell(0, 7, f"Subtotal Pensão: R$ {totais['pensao']:,.2f}", 0, 1, 'R')
 
-    # REAJUSTE DE ALUGUEL
     if tem_aluguel:
         pdf.ln(5)
         pdf.set_font("Arial", "B", 10)
@@ -208,7 +222,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.cell(100, 10, f"R$ {da['novo_valor']:,.2f}", 1, 1, 'R')
         pdf.ln(3)
 
-    # RESUMO FINAL
     if tem_execucao:
         pdf.ln(5)
         pdf.set_draw_color(0, 0, 0)
@@ -236,7 +249,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.multi_cell(0, 4, "Aviso Legal: Cálculo estimado com base em séries do BCB.")
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- MAPA DE ÍNDICES GLOBAL (EXPANDIDO) ---
+# --- MAPA DE ÍNDICES GLOBAL ---
 mapa_indices_completo = {
     "INPC (IBGE) - 188": 188, 
     "IGP-M (FGV) - 189": 189, 
@@ -250,31 +263,45 @@ mapa_indices_completo = {
 }
 cod_selic = 4390
 
-# --- MENU LATERAL (Apenas Configs Globais) ---
+# ==============================================================================
+# MENU LATERAL COM MODO DESENVOLVEDOR
+# ==============================================================================
 st.sidebar.header("Parâmetros Globais")
 data_calculo = st.sidebar.date_input("Data do Cálculo", value=date.today())
 
 st.sidebar.divider()
-st.sidebar.header("Penalidades (Execução)")
+st.sidebar.header("Penalidades")
 aplicar_multa_523 = st.sidebar.checkbox("Multa 10% (Art. 523)?", value=False)
 aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523)?", value=False)
 
-# Inicialização do Estado
-if 'total_indenizacao' not in st.session_state: st.session_state.total_indenizacao = 0.0
-if 'total_honorarios' not in st.session_state: st.session_state.total_honorarios = 0.0
-if 'total_pensao' not in st.session_state: st.session_state.total_pensao = 0.0
-if 'df_indenizacao' not in st.session_state: st.session_state.df_indenizacao = pd.DataFrame()
-if 'df_honorarios' not in st.session_state: st.session_state.df_honorarios = pd.DataFrame()
-if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input = pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"])
-if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
-if 'dados_aluguel' not in st.session_state: st.session_state.dados_aluguel = None 
-if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
+st.sidebar.divider()
+st.sidebar.markdown("### 🛠️ Área do Desenvolvedor")
 
+# TOGGLE PARA SIMULAR ERRO
+modo_simulacao = st.sidebar.toggle("Simular Queda do BCB (Erro)", value=False)
+
+# LÓGICA DO TOGGLE
+if modo_simulacao:
+    # Se ativou, avisa e limpa o cache para o erro aparecer na hora
+    if not st.session_state.simular_erro_bcb:
+        st.session_state.simular_erro_bcb = True
+        st.cache_data.clear() # Limpa o cache para forçar a re-execução com erro
+        st.rerun() # Recarrega a página para atualizar o status
+    st.sidebar.error("⚠️ SIMULAÇÃO DE ERRO ATIVA")
+else:
+    # Se desativou, limpa para voltar ao normal
+    if st.session_state.simular_erro_bcb:
+        st.session_state.simular_erro_bcb = False
+        st.cache_data.clear()
+        st.rerun()
+
+# ==============================================================================
 # ABAS
+# ==============================================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (CORRIGIDA)
+# ABA 1 - INDENIZAÇÃO (LÓGICA CORRIGIDA PARA DÍVIDA ÚNICA)
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
@@ -286,14 +313,15 @@ with tab1:
     
     st.write("---")
     c4, c5 = st.columns(2)
-    inicio_atraso = c4.date_input("Início da Mora", value=date(2024, 1, 1))
-    fim_atraso = c5.date_input("Fim da Mora", value=date.today())
-    metodo_calculo = st.radio("Método:", ["Ciclo Mensal Fechado", "Mês Civil (Pro-Rata)"], index=1, horizontal=True)
+    inicio_atraso = c4.date_input("Início da Mora", value=date(2021, 7, 10))
+    fim_atraso = c5.date_input("Fim da Mora", value=date(2021, 7, 10))
+    
+    help_metodo = "Ciclo Mensal: Para aluguéis/salários recorrentes. Mês Civil: Calcula dias proporcionais."
+    metodo_calculo = st.radio("Método:", ["Ciclo Mensal Fechado", "Mês Civil (Pro-Rata)"], index=1, horizontal=True, help=help_metodo)
     
     st.write("---")
     st.write("**Regime de Atualização (Selecione aqui):**")
     
-    # NOVO SELETOR INTEGRADO
     regime_tipo = st.radio(
         "Escolha o Regime:",
         ["1. Índice de Correção + Juros de 1% a.m.", "2. Taxa SELIC (EC 113/21)", "3. Misto (Índice até data X -> SELIC)"],
@@ -305,7 +333,6 @@ with tab1:
     data_corte_selic, data_citacao_ind = None, None
 
     if "1. Índice" in regime_tipo:
-        # Dropdown com TODOS os índices aqui dentro
         indice_selecionado_ind = st.selectbox("Selecione o Índice de Correção:", list(mapa_indices_completo.keys()))
         codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
         data_citacao_ind = st.date_input("Data Citação (Início Juros)", value=inicio_atraso)
@@ -315,38 +342,49 @@ with tab1:
         c_mix_ind, c_mix_dt = st.columns(2)
         indice_selecionado_ind = c_mix_ind.selectbox("Índice Fase 1 (Pré-SELIC):", list(mapa_indices_completo.keys()))
         codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
-        
         data_citacao_ind = c_mix_dt.date_input("Data Citação", value=inicio_atraso)
         data_corte_selic = st.date_input("Data de Corte (Início SELIC)", value=date(2021, 12, 9))
         st.session_state.regime_desc = f"Misto ({indice_selecionado_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
-        
     else:
         st.session_state.regime_desc = "SELIC Pura (Correção + Juros)"
 
     if st.button("Calcular Indenização/Dívida", type="primary"):
         lista_ind = []
+        
+        # CHECAGEM PRÉVIA DE SIMULAÇÃO (Para feedback visual imediato)
+        if st.session_state.simular_erro_bcb:
+             st.error("🚨 ERRO SIMULADO: Falha na conexão com o Banco Central detectada.")
+        
         with st.status("Processando...", expanded=True) as status:
             datas_vencimento, valores_base = [], []
-            if metodo_calculo == "Ciclo Mensal Fechado":
-                 t_date = inicio_atraso
-                 while t_date < fim_atraso:
-                     prox = t_date + relativedelta(months=1)
-                     venc = prox - timedelta(days=1)
-                     if venc > fim_atraso: venc = fim_atraso
-                     datas_vencimento.append(venc)
-                     valores_base.append(val_mensal) 
-                     t_date = prox
+            
+            # --- LÓGICA CORRIGIDA: DÍVIDA ÚNICA ---
+            if inicio_atraso == fim_atraso:
+                # Se as datas são iguais, o valor é cheio (não divide por dias)
+                datas_vencimento = [inicio_atraso]
+                valores_base = [val_mensal]
             else:
-                curr_date = inicio_atraso
-                while curr_date <= fim_atraso:
-                    ultimo_dia = curr_date.replace(day=calendar.monthrange(curr_date.year, curr_date.month)[1])
-                    data_fim_p = fim_atraso if fim_atraso < ultimo_dia else ultimo_dia
-                    dias_mes = calendar.monthrange(curr_date.year, curr_date.month)[1]
-                    dias_corr = (data_fim_p - curr_date).days + 1
-                    val = val_mensal if dias_corr == dias_mes else (val_mensal / dias_mes) * dias_corr
-                    datas_vencimento.append(data_fim_p)
-                    valores_base.append(val)
-                    curr_date = ultimo_dia + timedelta(days=1)
+                # Se as datas são diferentes, é dívida mensal (aplica Pro-Rata se selecionado)
+                if metodo_calculo == "Ciclo Mensal Fechado":
+                     t_date = inicio_atraso
+                     while t_date < fim_atraso:
+                         prox = t_date + relativedelta(months=1)
+                         venc = prox - timedelta(days=1)
+                         if venc > fim_atraso: venc = fim_atraso
+                         datas_vencimento.append(venc)
+                         valores_base.append(val_mensal) 
+                         t_date = prox
+                else:
+                    curr_date = inicio_atraso
+                    while curr_date <= fim_atraso:
+                        ultimo_dia = curr_date.replace(day=calendar.monthrange(curr_date.year, curr_date.month)[1])
+                        data_fim_p = fim_atraso if fim_atraso < ultimo_dia else ultimo_dia
+                        dias_mes = calendar.monthrange(curr_date.year, curr_date.month)[1]
+                        dias_corr = (data_fim_p - curr_date).days + 1
+                        val = val_mensal if dias_corr == dias_mes else (val_mensal / dias_mes) * dias_corr
+                        datas_vencimento.append(data_fim_p)
+                        valores_base.append(val)
+                        curr_date = ultimo_dia + timedelta(days=1)
 
             for i, venc in enumerate(datas_vencimento):
                 val_base = valores_base[i]
@@ -356,12 +394,13 @@ with tab1:
                 v_fase1 = 0.0
                 v_corrigido_puro = 0.0 
                 
+                # AQUI ENTRA A CHECAGEM DE RETORNO 'NONE'
                 if "1. Índice" in regime_tipo:
                     fator = buscar_fator_bcb(codigo_indice_ind, venc, data_calculo)
                     if fator is None:
-                        st.error(f"Erro ao buscar dados do BCB para {venc.strftime('%d/%m/%Y')}. Verifique conexão.")
-                        status.update(label="Falha de conexão!", state="error")
-                        st.stop()
+                        status.update(label="Erro de Conexão!", state="error")
+                        st.error(f"Não foi possível obter índice para {venc.strftime('%d/%m/%Y')}.")
+                        st.stop() # PARA O CÓDIGO
                         
                     v_fase1 = val_base * fator
                     v_corrigido_puro = v_fase1
@@ -371,22 +410,24 @@ with tab1:
                     juros_val = v_fase1 * (0.01/30 * dias) if dias > 0 else 0.0
                     audit_juros_perc = f"{(dias/30):.1f}% ({dias}d)"
                     total_final = v_fase1 + juros_val
+                    
                 elif "2. Taxa SELIC" in regime_tipo:
                     fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                     if fator is None:
-                        st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}. Verifique conexão.")
-                        status.update(label="Falha de conexão!", state="error")
+                        status.update(label="Erro de Conexão!", state="error")
+                        st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}.")
                         st.stop()
                         
                     total_final = val_base * fator
                     audit_fator_selic = f"{fator:.5f}"
                     v_fase1 = total_final
                     v_corrigido_puro = total_final
+                    
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
                         fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
                         if fator is None:
-                            st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}.")
+                            st.error(f"Erro ao buscar SELIC.")
                             st.stop()
                         total_final = val_base * fator
                         audit_fator_selic = f"{fator:.5f}"
@@ -395,7 +436,7 @@ with tab1:
                     else:
                         fator_f1 = buscar_fator_bcb(codigo_indice_ind, venc, data_corte_selic)
                         if fator_f1 is None:
-                            st.error(f"Erro ao buscar índice Fase 1 para {venc.strftime('%d/%m/%Y')}.")
+                            st.error(f"Erro ao buscar índice Fase 1.")
                             st.stop()
                             
                         v_corrigido_puro = val_base * fator_f1
@@ -413,7 +454,6 @@ with tab1:
                         if fator_s is None:
                             st.error(f"Erro ao buscar SELIC Fase 2.")
                             st.stop()
-                            
                         total_final = base_selic * fator_s
                         audit_fator_selic = f"{fator_s:.5f}"
                         v_fase1 = base_selic
@@ -433,7 +473,7 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS (CORRIGIDA)
+# ABA 2 - HONORÁRIOS (COM TRAVAS DE ERRO)
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
@@ -454,9 +494,10 @@ with tab2:
         st.info("SELIC engloba correção e juros.")
 
     if st.button("Calcular Honorários"):
+        if st.session_state.simular_erro_bcb:
+             st.error("🚨 ERRO SIMULADO: Conexão interrompida.")
+             
         total_hon, desc_audit, juros_txt = 0.0, "", "N/A"
-        
-        # VERIFICAÇÃO DE ERRO
         f = None
         if "SELIC Pura" in regime_hon:
             f = buscar_fator_bcb(cod_selic, d_h, data_calculo)
@@ -472,7 +513,6 @@ with tab2:
             if f is None:
                 st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão.")
                 st.stop()
-                
             v_corr = v_h * f
             desc_audit = f"{indice_hon_sel} {f:.5f}"
             val_jur = 0.0
@@ -491,14 +531,13 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO (CORRIGIDA)
+# ABA 3 - PENSÃO (COM TRAVAS DE ERRO)
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
     st.info("Cálculo de Dívida: O sistema abate o valor pago do original antes de aplicar juros/correção.")
     
-    # Seleção de índice específica para pensão também (para consistência)
-    idx_pensao = st.selectbox("Índice para Pensão:", list(mapa_indices_completo.keys()), index=0) # Default INPC
+    idx_pensao = st.selectbox("Índice para Pensão:", list(mapa_indices_completo.keys()), index=0)
     cod_idx_pensao = mapa_indices_completo[idx_pensao]
 
     col_p1, col_p2, col_p3 = st.columns(3)
@@ -520,6 +559,9 @@ with tab3:
     tabela_editada = st.data_editor(st.session_state.df_pensao_input, num_rows="dynamic", hide_index=True, use_container_width=True)
     
     if st.button("2. Calcular Saldo Devedor"):
+        if st.session_state.simular_erro_bcb:
+             st.error("🚨 ERRO SIMULADO: Falha de rede.")
+        
         if not tabela_editada.empty:
             res_p = []
             erro_flag = False
@@ -534,12 +576,9 @@ with tab3:
                     res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:.2f}", "Valor Pago": f"R$ {v_pago:.2f}", "Base Cálculo": "R$ 0.00", "Fator CM": "-", "Atualizado": "QUITADO", "Juros": "-", "TOTAL": "R$ 0.00", "_num": 0.0})
                 else:
                     fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
-                    
-                    # TRAVA DE SEGURANÇA
                     if fator is None:
                         erro_flag = True
                         break
-                        
                     v_corr = saldo_base * fator
                     juros = 0.0
                     dias = (data_calculo - venc).days
@@ -557,12 +596,10 @@ with tab3:
                 st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL (CORRIGIDA)
+# ABA 4 - REAJUSTE ALUGUEL (COM TRAVAS DE ERRO)
 # ==============================================================================
 with tab4:
     st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
-    st.markdown("Utilize esta aba para calcular o **novo valor do aluguel** no aniversário do contrato (Sem juros).")
-    
     c_alug1, c_alug2, c_alug3 = st.columns(3)
     val_atual_aluguel = c_alug1.number_input("Valor Atual do Aluguel", value=2000.00, step=50.0)
     dt_reajuste_aluguel = c_alug2.date_input("Data do Reajuste (Aniversário)", value=date.today())
@@ -576,7 +613,6 @@ with tab4:
         with st.spinner(f"Buscando acumulado de {idx_aluguel}..."):
             fator_reajuste = buscar_fator_bcb(cod_serie_aluguel, dt_inicio_12m, dt_reajuste_aluguel)
         
-        # TRAVA DE SEGURANÇA
         if fator_reajuste is None:
             st.error(f"Não foi possível obter o índice {idx_aluguel} no BCB. Tente novamente mais tarde.")
             st.stop()
@@ -600,7 +636,7 @@ with tab4:
         m3.metric("Novo Aluguel", f"R$ {novo_valor_aluguel:,.2f}")
 
 # ==============================================================================
-# ABA 5 - PDF FINAL (MODULAR)
+# ABA 5 - PDF FINAL
 # ==============================================================================
 with tab5:
     st.header("Gerar Relatório / PDF")
