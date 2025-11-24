@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 2.6", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 2.7 (Safe)", layout="wide", page_icon="⚖️")
 
 # CSS Customizado
 st.markdown("""
@@ -22,12 +22,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 2.6 - Sistema Modular Avançado")
-st.markdown("Cálculos Judiciais com **Seleção de índices integrada** na aba de indenização.")
+st.title("⚖️ CalcJus PRO 2.7 - Sistema Modular Seguro")
+st.markdown("Cálculos Judiciais com **Validação de Conexão BCB** integrada.")
 
 # --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
+    """
+    Busca o fator acumulado de correção monetária na API do Banco Central.
+    Retorna None em caso de erro para evitar cálculos falsos.
+    """
     if data_fim <= data_inicio: return 1.0
     if data_inicio > date.today(): return 1.0
     
@@ -36,7 +40,7 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados?formato=json&dataInicial={d1}&dataFinal={d2}"
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=10) # Timeout de 10s
         if response.status_code == 200:
             dados = response.json()
             fator = 1.0
@@ -48,9 +52,11 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
                     continue
             return fator
         else:
-            return 1.0
+            # Erro na resposta da API (ex: 404, 500)
+            return None
     except Exception as e:
-        return 1.0
+        # Erro de conexão ou timeout
+        return None
 
 # --- CLASSE PDF PROFISSIONAL ---
 class PDF(FPDF):
@@ -268,7 +274,7 @@ if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrã
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO (ATUALIZADA COM ÍNDICES INTEGRADOS)
+# ABA 1 - INDENIZAÇÃO (CORRIGIDA)
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
@@ -352,6 +358,11 @@ with tab1:
                 
                 if "1. Índice" in regime_tipo:
                     fator = buscar_fator_bcb(codigo_indice_ind, venc, data_calculo)
+                    if fator is None:
+                        st.error(f"Erro ao buscar dados do BCB para {venc.strftime('%d/%m/%Y')}. Verifique conexão.")
+                        status.update(label="Falha de conexão!", state="error")
+                        st.stop()
+                        
                     v_fase1 = val_base * fator
                     v_corrigido_puro = v_fase1
                     audit_fator_cm = f"{fator:.5f}" 
@@ -362,6 +373,11 @@ with tab1:
                     total_final = v_fase1 + juros_val
                 elif "2. Taxa SELIC" in regime_tipo:
                     fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
+                    if fator is None:
+                        st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}. Verifique conexão.")
+                        status.update(label="Falha de conexão!", state="error")
+                        st.stop()
+                        
                     total_final = val_base * fator
                     audit_fator_selic = f"{fator:.5f}"
                     v_fase1 = total_final
@@ -369,12 +385,19 @@ with tab1:
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
                         fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
+                        if fator is None:
+                            st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}.")
+                            st.stop()
                         total_final = val_base * fator
                         audit_fator_selic = f"{fator:.5f}"
                         v_fase1 = total_final
                         v_corrigido_puro = total_final
                     else:
                         fator_f1 = buscar_fator_bcb(codigo_indice_ind, venc, data_corte_selic)
+                        if fator_f1 is None:
+                            st.error(f"Erro ao buscar índice Fase 1 para {venc.strftime('%d/%m/%Y')}.")
+                            st.stop()
+                            
                         v_corrigido_puro = val_base * fator_f1
                         audit_fator_cm = f"{fator_f1:.5f} (f1)"
                         dt_j = data_citacao_ind if venc < data_citacao_ind else venc
@@ -385,7 +408,12 @@ with tab1:
                         else: j_f1 = 0.0
                         base_selic = v_corrigido_puro + j_f1
                         v_base_selic_str = f"R$ {base_selic:,.2f}"
+                        
                         fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
+                        if fator_s is None:
+                            st.error(f"Erro ao buscar SELIC Fase 2.")
+                            st.stop()
+                            
                         total_final = base_selic * fator_s
                         audit_fator_selic = f"{fator_s:.5f}"
                         v_fase1 = base_selic
@@ -405,7 +433,7 @@ with tab1:
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS
+# ABA 2 - HONORÁRIOS (CORRIGIDA)
 # ==============================================================================
 with tab2:
     st.subheader("Cálculo de Honorários")
@@ -427,14 +455,24 @@ with tab2:
 
     if st.button("Calcular Honorários"):
         total_hon, desc_audit, juros_txt = 0.0, "", "N/A"
+        
+        # VERIFICAÇÃO DE ERRO
+        f = None
         if "SELIC Pura" in regime_hon:
             f = buscar_fator_bcb(cod_selic, d_h, data_calculo)
+            if f is None:
+                st.error("Erro ao buscar SELIC. Verifique sua conexão com a internet.")
+                st.stop()
             total_hon = v_h * f
             desc_audit = f"SELIC {f:.5f}"
             juros_txt = "Incluso"
         else:
             cod_ind_hon = mapa_indices_completo[indice_hon_sel]
             f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
+            if f is None:
+                st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão.")
+                st.stop()
+                
             v_corr = v_h * f
             desc_audit = f"{indice_hon_sel} {f:.5f}"
             val_jur = 0.0
@@ -453,7 +491,7 @@ with tab2:
         st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
 # ==============================================================================
-# ABA 3 - PENSÃO
+# ABA 3 - PENSÃO (CORRIGIDA)
 # ==============================================================================
 with tab3:
     st.subheader("👶 Pensão Alimentícia")
@@ -484,6 +522,7 @@ with tab3:
     if st.button("2. Calcular Saldo Devedor"):
         if not tabela_editada.empty:
             res_p = []
+            erro_flag = False
             for i, (index, r) in enumerate(tabela_editada.iterrows()):
                 try:
                     venc = pd.to_datetime(r["Vencimento"]).date()
@@ -495,6 +534,12 @@ with tab3:
                     res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:.2f}", "Valor Pago": f"R$ {v_pago:.2f}", "Base Cálculo": "R$ 0.00", "Fator CM": "-", "Atualizado": "QUITADO", "Juros": "-", "TOTAL": "R$ 0.00", "_num": 0.0})
                 else:
                     fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
+                    
+                    # TRAVA DE SEGURANÇA
+                    if fator is None:
+                        erro_flag = True
+                        break
+                        
                     v_corr = saldo_base * fator
                     juros = 0.0
                     dias = (data_calculo - venc).days
@@ -502,13 +547,17 @@ with tab3:
                     total_linha = v_corr + juros
                     res_p.append({"Vencimento": venc.strftime("%d/%m/%Y"), "Valor Devido": f"R$ {v_devido:,.2f}", "Valor Pago": f"R$ {v_pago:,.2f}", "Base Cálculo": f"R$ {saldo_base:,.2f}", "Fator CM": f"{fator:.5f}", "Atualizado": f"R$ {v_corr:,.2f}", "Juros": f"R$ {juros:,.2f}", "TOTAL": f"R$ {total_linha:,.2f}", "_num": total_linha})
             
-            st.session_state.df_pensao_final = pd.DataFrame(res_p)
-            st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
-            st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
-            st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
+            if erro_flag:
+                st.error("Erro de conexão com BCB. Não foi possível calcular todos os meses.")
+                st.stop()
+            else:
+                st.session_state.df_pensao_final = pd.DataFrame(res_p)
+                st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
+                st.success(f"Saldo Devedor: R$ {st.session_state.total_pensao:,.2f}")
+                st.dataframe(st.session_state.df_pensao_final.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL
+# ABA 4 - REAJUSTE ALUGUEL (CORRIGIDA)
 # ==============================================================================
 with tab4:
     st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
@@ -523,9 +572,15 @@ with tab4:
         dt_inicio_12m = dt_reajuste_aluguel - relativedelta(months=12)
         cod_serie_aluguel = mapa_indices_completo[idx_aluguel]
         
+        fator_reajuste = None
         with st.spinner(f"Buscando acumulado de {idx_aluguel}..."):
             fator_reajuste = buscar_fator_bcb(cod_serie_aluguel, dt_inicio_12m, dt_reajuste_aluguel)
         
+        # TRAVA DE SEGURANÇA
+        if fator_reajuste is None:
+            st.error(f"Não foi possível obter o índice {idx_aluguel} no BCB. Tente novamente mais tarde.")
+            st.stop()
+            
         novo_valor_aluguel = val_atual_aluguel * fator_reajuste
         dif = novo_valor_aluguel - val_atual_aluguel
         perc_acum = (fator_reajuste - 1) * 100
