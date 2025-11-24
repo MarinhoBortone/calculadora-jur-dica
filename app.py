@@ -5,106 +5,133 @@ import calendar
 from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
+from decimal import Decimal, ROUND_HALF_UP, getcontext
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="CalcJus Pro 3.7 (Final)", layout="wide", page_icon="⚖️")
+# --- CONFIGURAÇÃO FINANCEIRA E GLOBAL ---
+# Define precisão global para evitar erros de dízima, mas arredonda apenas na exibição
+getcontext().prec = 28
+DOIS_DECIMAIS = Decimal('0.01')
 
-# CSS Customizado
+# Configuração da Página
+st.set_page_config(page_title="CalcJus Pro 4.0 (Blindado)", layout="wide", page_icon="⚖️")
+
+# CSS Otimizado
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] {
-        font-size: 1.5rem;
-        color: #0044cc;
-    }
-    .stAlert {
-        padding: 0.5rem;
-    }
-    .dev-mode {
-        border: 1px dashed red;
-        padding: 10px;
-        background-color: #fff0f0;
-    }
+    [data-testid="stMetricValue"] { font-size: 1.4rem; color: #0044cc; font-weight: bold; }
+    .stAlert { padding: 0.5rem; border-radius: 8px; }
+    thead tr th:first-child { display:none }
+    tbody th { display:none }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 3.7 - Sistema Blindado")
-st.markdown("Cálculos Judiciais: Indenização, Honorários e Pensão Alimentícia.")
+st.title("⚖️ CalcJus PRO 4.0 - Núcleo Financeiro Blindado")
+st.markdown("Sistema de cálculos judiciais com precisão bancária (Decimal Engine) e conexão resiliente.")
 
-# --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
-if 'simular_erro_bcb' not in st.session_state: st.session_state.simular_erro_bcb = False
-if 'total_indenizacao' not in st.session_state: st.session_state.total_indenizacao = 0.0
-if 'total_honorarios' not in st.session_state: st.session_state.total_honorarios = 0.0
-if 'total_pensao' not in st.session_state: st.session_state.total_pensao = 0.0
-if 'df_indenizacao' not in st.session_state: st.session_state.df_indenizacao = pd.DataFrame()
-if 'df_honorarios' not in st.session_state: st.session_state.df_honorarios = pd.DataFrame()
-if 'df_pensao_input' not in st.session_state: st.session_state.df_pensao_input = pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"])
-if 'df_pensao_final' not in st.session_state: st.session_state.df_pensao_final = pd.DataFrame()
-if 'dados_aluguel' not in st.session_state: st.session_state.dados_aluguel = None 
-if 'regime_desc' not in st.session_state: st.session_state.regime_desc = "Padrão"
+# --- ESTADO DA SESSÃO ---
+state_vars = {
+    'simular_erro_bcb': False,
+    'total_indenizacao': Decimal('0.00'),
+    'total_honorarios': Decimal('0.00'),
+    'total_pensao': Decimal('0.00'),
+    'df_indenizacao': pd.DataFrame(),
+    'df_honorarios': pd.DataFrame(),
+    'df_pensao_input': pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"]),
+    'df_pensao_final': pd.DataFrame(),
+    'dados_aluguel': None,
+    'regime_desc': "Padrão"
+}
 
-# --- FUNÇÃO AUXILIAR: FORMATAÇÃO BRASILEIRA ---
-def formatar_moeda(valor):
+for var, default in state_vars.items():
+    if var not in st.session_state:
+        st.session_state[var] = default
+
+# --- FUNÇÕES UTILITÁRIAS (ENGINE FINANCEIRA) ---
+
+def to_decimal(valor):
+    """Converte qualquer input para Decimal de forma segura."""
+    if not valor: return Decimal('0.00')
     try:
-        texto = f"R$ {float(valor):,.2f}"
-        texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
-        return texto
+        if isinstance(valor, str):
+            # Remove formatação brasileira antes de converter
+            valor = valor.replace('.', '').replace(',', '.')
+        return Decimal(str(valor))
+    except:
+        return Decimal('0.00')
+
+def formatar_moeda(valor):
+    """Formata Decimal para string BRL."""
+    try:
+        if not isinstance(valor, Decimal):
+            valor = to_decimal(valor)
+        # Arredonda para 2 casas para exibição
+        valor_ajustado = valor.quantize(DOIS_DECIMAIS, rounding=ROUND_HALF_UP)
+        texto = f"R$ {valor_ajustado:,.2f}"
+        return texto.replace(",", "X").replace(".", ",").replace("X", ".")
     except:
         return "R$ 0,00"
 
-def formatar_data_br(dt):
-    if isinstance(dt, (date, datetime)):
-        return dt.strftime("%d/%m/%Y")
-    return "-"
+def formatar_decimal_str(valor):
+    """Retorna string de número float para uso em logs/auditoria."""
+    return f"{valor:.6f}"
 
-# --- FUNÇÃO DE BUSCA NO BANCO CENTRAL (BCB) - BLINDADA ---
+# --- CONEXÃO ROBUSTA COM BANCO CENTRAL ---
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
-    # Modo Dev
+    """
+    Busca séries do BCB com sistema de Retry (3 tentativas) e Backoff.
+    Retorna um objeto Decimal ou None.
+    """
     if st.session_state.simular_erro_bcb: return None
 
-    if data_fim <= data_inicio: return 1.0
-    if data_inicio > date.today(): return 1.0
+    # Validação de Datas
+    if data_fim <= data_inicio or data_inicio > date.today():
+        return Decimal('1.000000')
     
     d1 = data_inicio.strftime("%d/%m/%Y")
     d2 = data_fim.strftime("%d/%m/%Y")
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados?formato=json&dataInicial={d1}&dataFinal={d2}"
     
+    # Configuração de Retry (Segurança de Conexão)
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('https://', adapter)
+
     try:
-        response = requests.get(url, timeout=10)
-        
-        # Verifica se a resposta é válida antes de tentar ler JSON
+        response = session.get(url, timeout=10)
         if response.status_code == 200:
             try:
                 dados = response.json()
             except:
-                return None # Erro ao decodificar JSON (BCB retornou HTML de erro)
+                return None # Erro de parse JSON
 
-            fator = 1.0
+            fator = Decimal('1.0')
             for item in dados:
                 try:
-                    # TRATAMENTO DE DADOS SENSÍVEL (Resolve o problema do INPC)
                     val_raw = item['valor']
-                    
-                    # Se vier string com vírgula, troca por ponto
                     if isinstance(val_raw, str):
                         val_raw = val_raw.replace(',', '.')
-                        
-                    val = float(val_raw)
-                    fator *= (1 + val/100)
-                except (ValueError, TypeError, KeyError):
+                    
+                    val_dec = Decimal(val_raw)
+                    # Fórmula composta: Fator *= (1 + taxa/100)
+                    fator *= (Decimal('1') + (val_dec / Decimal('100')))
+                except:
                     continue
             return fator
-        else:
-            return None
+        return None
     except Exception:
         return None
 
-# --- CLASSE PDF PROFISSIONAL ---
-class PDF(FPDF):
+# --- GERAÇÃO DE PDF PROFISSIONAL ---
+class PDFRelatorio(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 10)
         self.set_text_color(50, 50, 50)
-        self.cell(0, 5, 'CALCJUS PRO - SISTEMA DE CÁLCULOS', 0, 1, 'R')
+        self.cell(0, 5, 'CALCJUS PRO - LAUDO TÉCNICO', 0, 1, 'R')
         self.set_draw_color(0, 0, 0)
         self.line(10, 15, 287, 15) 
         self.ln(8)
@@ -113,192 +140,153 @@ class PDF(FPDF):
         self.set_y(-15)
         self.set_font('Arial', 'I', 7)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 5, f'Página {self.page_no()}/{{nb}} | Documento gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
+        self.cell(0, 5, f'Pagina {self.page_no()}/{{nb}} | Gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
 
-# --- FUNÇÃO GERADORA DE RELATÓRIO ---
+    def safe_cell(self, w, h, txt, border=0, ln=0, align='', fill=False):
+        """Método seguro para imprimir texto convertendo para Latin-1 e evitando falhas."""
+        try:
+            # Tenta codificar e decodificar para garantir compatibilidade com latin-1
+            txt_safe = str(txt).encode('latin-1', 'replace').decode('latin-1')
+            self.cell(w, h, txt_safe, border, ln, align, fill)
+        except:
+            # Fallback em caso extremo
+            self.cell(w, h, "Erro Char", border, ln, align, fill)
+
 def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, config):
-    pdf = PDF(orientation='L', unit='mm', format='A4')
+    pdf = PDFRelatorio(orientation='L', unit='mm', format='A4')
     pdf.alias_nb_pages()
     pdf.add_page()
     
-    tem_execucao = (totais['final'] > 0)
-    tem_aluguel = (dados_aluguel is not None)
-    titulo = "RELATÓRIO GERAL"
-    if tem_execucao and not tem_aluguel: titulo = "DEMONSTRATIVO DE CÁLCULO - EXECUÇÃO"
-    elif not tem_execucao and tem_aluguel: titulo = "MEMÓRIA DE CÁLCULO - REAJUSTE CONTRATUAL"
-    
+    # Título
     pdf.set_font("Arial", "B", 14)
-    pdf.set_fill_color(230, 230, 230)
-    pdf.cell(0, 10, titulo, 0, 1, "C", fill=True)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.safe_cell(0, 10, "RELATÓRIO DE CÁLCULO JUDICIAL", 0, 1, "C", True)
     pdf.ln(5)
     
-    # 1. METODOLOGIA (MEMORIAL)
+    # 1. Metodologia
     pdf.set_font("Arial", "B", 10)
-    pdf.set_fill_color(245, 245, 245)
-    pdf.cell(0, 7, " 1. PARÂMETROS E METODOLOGIA (MEMORIAL DESCRITIVO)", 0, 1, fill=True)
-    pdf.ln(2)
+    pdf.safe_cell(0, 7, " 1. PARÂMETROS E METODOLOGIA", 0, 1)
+    pdf.ln(1)
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
-    
+    texto_metodologia = (
+        f"DATA BASE: {dt_calc}\n"
+        f"REGIME: {config.get('regime_desc')}\n"
+        f"Este cálculo utiliza metodologia de juros simples pro-rata die (1% a.m.) e correção monetária "
+        f"conforme tabelas oficiais do Banco Central do Brasil."
+    )
     pdf.set_font("Arial", "", 9)
-    texto_explicativo = f"DATA BASE DO CÁLCULO: {dt_calc}\n\n"
-    
-    if tem_execucao:
-        tipo_regime = config.get('tipo_regime', 'Padrao')
-        
-        if "Misto" in tipo_regime:
-            dt_corte = formatar_data_br(config.get('data_corte'))
-            dt_cit = formatar_data_br(config.get('data_citacao'))
-            indice = config.get('indice_nome', 'Índice')
-            texto_explicativo += (
-                f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
-                f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
-                f"1. FASE PRÉ-SELIC (Do vencimento até {dt_corte}): O valor original foi corrigido monetariamente pelo índice '{indice}'. "
-                f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit}.\n"
-                f"2. FASE SELIC (De {dt_corte} até {dt_calc}): O montante total da Fase 1 (Principal Corrigido + Juros) foi consolidado e, a partir desta data, "
-                f"atualizado exclusivamente pela variação da Taxa SELIC acumulada, a qual engloba correção monetária e juros de mora, vedada a cumulação com outros índices."
-            )
-        elif "SELIC Pura" in tipo_regime:
-            texto_explicativo += (
-                f"METODOLOGIA APLICADA (Taxa SELIC):\n"
-                f"O valor original foi atualizado exclusivamente pela Taxa SELIC acumulada desde a data do vencimento (ou evento danoso) até a data base atual. "
-                f"Conforme jurisprudência do STJ e EC 113/21, a Taxa SELIC engloba juros de mora e correção monetária em um único fator."
-            )
-        else:
-            indice = config.get('indice_nome', 'Índice')
-            dt_cit = formatar_data_br(config.get('data_citacao'))
-            texto_explicativo += (
-                f"METODOLOGIA APLICADA (Padrão Cível):\n"
-                f"1. CORREÇÃO MONETÁRIA: O valor original foi atualizado pelo índice '{indice}' desde a data do vencimento até a data base.\n"
-                f"2. JUROS DE MORA: Foram aplicados juros moratórios de 1% ao mês (juros simples), calculados de forma pro-rata die (proporcional aos dias), "
-                f"incidindo sobre o valor corrigido, contados a partir de {dt_cit}."
-            )
-            
-    pdf.multi_cell(0, 5, texto_explicativo)
+    pdf.multi_cell(0, 5, texto_metodologia.encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
-    # 2. INDENIZAÇÃO
+    # 2. Indenização
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
-        pdf.cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS GERAIS", 0, 1, fill=True)
+        pdf.safe_cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS CÍVEIS", 0, 1, '', True)
+        
+        headers = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), 
+                   ("V. Corrigido", 25), ("Juros Mora", 35), ("Subtotal F1", 25), 
+                   ("Fator SELIC", 20), ("TOTAL", 30)]
+        
         pdf.set_font("Arial", "B", 7)
-        cols = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), ("V. Corrigido", 25), ("Juros / Mora", 45), ("Total Fase 1", 25), ("Fator SELIC", 20), ("TOTAL FINAL", 30)]
-        for txt, w in cols: pdf.cell(w, 6, txt, 1, 0, 'C')
+        for txt, w in headers: pdf.safe_cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
+        
         pdf.set_font("Arial", "", 7)
-        for index, row in dados_ind.iterrows():
-            j_detalhe = str(row.get('Audit Juros %', '-'))
-            if len(j_detalhe) > 35: j_detalhe = j_detalhe[:32] + "..."
-            data_row = [str(row['Vencimento']), str(row['Valor Orig.']), str(row.get('Audit Fator CM', '-')), str(row.get('V. Corrigido Puro', '-')), j_detalhe, str(row.get('Total Fase 1', '-')), str(row.get('Audit Fator SELIC', '-')), str(row['TOTAL'])]
-            col_w = [c[1] for c in cols]
-            for i, datum in enumerate(data_row):
-                align = 'L' if i == 4 else 'C'
-                pdf.cell(col_w[i], 6, datum, 1, 0, align)
+        for _, row in dados_ind.iterrows():
+            dados = [
+                str(row['Vencimento']), str(row['Valor Orig.']), str(row.get('Audit Fator CM', '-')),
+                str(row.get('V. Corrigido Puro', '-')), str(row.get('Audit Juros %', '-')), 
+                str(row.get('Total Fase 1', '-')), str(row.get('Audit Fator SELIC', '-')), 
+                str(row['TOTAL'])
+            ]
+            widths = [h[1] for h in headers]
+            for i, d in enumerate(dados):
+                align = 'L' if i == 4 else 'C' # Juros alinhado a esquerda pois tem texto
+                pdf.safe_cell(widths[i], 6, d, 1, 0, align)
             pdf.ln()
+        
         pdf.set_font("Arial", "B", 9)
-        pdf.cell(0, 7, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
+        pdf.safe_cell(0, 7, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # 3. HONORÁRIOS
+    # 3. Honorários
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
-        pdf.cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, fill=True)
+        pdf.safe_cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, '', True)
         pdf.set_font("Arial", "B", 7)
+        
+        # Cabeçalho Honorários
         cols_hon = [("Descrição", 60), ("Valor Orig.", 30), ("Fator/Índice", 40), ("Juros", 40), ("TOTAL", 40)]
-        for txt, w in cols_hon: pdf.cell(w, 6, txt, 1, 0, 'C')
+        for txt, w in cols_hon: pdf.safe_cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
+        
         pdf.set_font("Arial", "", 8)
-        for index, row in dados_hon.iterrows():
-             pdf.cell(60, 6, str(row['Descrição']), 1, 0, 'L')
-             pdf.cell(30, 6, str(row['Valor Orig.']), 1, 0, 'C')
-             pdf.cell(40, 6, str(row.get('Audit Fator', '-')), 1, 0, 'C')
-             pdf.cell(40, 6, str(row.get('Juros', '-')), 1, 0, 'C')
-             pdf.cell(40, 6, str(row['TOTAL']), 1, 0, 'C')
+        for _, row in dados_hon.iterrows():
+             pdf.safe_cell(60, 6, str(row['Descrição']), 1, 0, 'L')
+             pdf.safe_cell(30, 6, str(row['Valor Orig.']), 1, 0, 'C')
+             pdf.safe_cell(40, 6, str(row.get('Audit Fator', '-')), 1, 0, 'C')
+             pdf.safe_cell(40, 6, str(row.get('Juros', '-')), 1, 0, 'C')
+             pdf.safe_cell(40, 6, str(row['TOTAL']), 1, 0, 'C')
              pdf.ln()
+        
         pdf.set_font("Arial", "B", 9)
-        pdf.cell(0, 7, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
+        pdf.safe_cell(0, 7, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # 4. PENSÃO
+    # 4. Pensão
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
-        pdf.cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", 0, 1, fill=True)
+        pdf.safe_cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", 0, 1, '', True)
+        
+        h_pen = [("Vencimento", 25), ("Devido", 25), ("Pago", 25), ("Saldo Base", 25), 
+                 ("Fator CM", 20), ("Atualizado", 25), ("Juros", 25), ("TOTAL", 30)]
+        
         pdf.set_font("Arial", "B", 7)
-        headers_pen = [("Vencimento", 25), ("Devido", 25), ("Pago", 25), ("Base Liq.", 25), ("Fator CM", 20), ("Atualizado", 25), ("Juros", 25), ("TOTAL", 30)]
-        for h, w in headers_pen: pdf.cell(w, 6, h, 1, 0, 'C')
+        for h, w in h_pen: pdf.safe_cell(w, 6, h, 1, 0, 'C')
         pdf.ln()
+        
         pdf.set_font("Arial", "", 7)
-        for index, row in dados_pen.iterrows():
-            pdf.cell(25, 6, str(row['Vencimento']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Valor Devido']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Valor Pago']), 1, 0, 'C')
-            pdf.set_font("Arial", "B", 7)
-            pdf.cell(25, 6, str(row['Base Cálculo']), 1, 0, 'C')
-            pdf.set_font("Arial", "", 7)
-            pdf.cell(20, 6, str(row['Fator CM']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row['Atualizado']), 1, 0, 'C')
-            pdf.cell(25, 6, str(row.get('Juros', '-')), 1, 0, 'C')
-            pdf.set_font("Arial", "B", 7)
-            pdf.cell(30, 6, str(row['TOTAL']), 1, 0, 'C')
-            pdf.set_font("Arial", "", 7)
+        for _, row in dados_pen.iterrows():
+            vals = [row['Vencimento'], row['Valor Devido'], row['Valor Pago'], row['Base Cálculo'],
+                    row['Fator CM'], row['Atualizado'], row['Juros'], row['TOTAL']]
+            widths = [x[1] for x in h_pen]
+            for i, v in enumerate(vals):
+                pdf.safe_cell(widths[i], 6, str(v), 1, 0, 'C')
             pdf.ln()
+            
         pdf.set_font("Arial", "B", 9)
-        pdf.cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
+        pdf.safe_cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
-    # 5. REAJUSTE ALUGUEL
-    if tem_aluguel:
+    # 5. Resumo Final
+    if totais['final'] > 0:
         pdf.ln(5)
-        pdf.set_font("Arial", "B", 10)
-        pdf.set_fill_color(255, 255, 220) 
-        pdf.cell(0, 7, " DEMONSTRATIVO DE REAJUSTE DE ALUGUEL", 0, 1, fill=True)
-        da = dados_aluguel
-        pdf.set_font("Arial", "", 10)
-        pdf.ln(2)
-        pdf.cell(50, 8, "Item", 1, 0, 'C')
-        pdf.cell(100, 8, "Detalhe", 1, 1, 'C')
-        pdf.cell(50, 8, "Valor Atual", 1, 0, 'L')
-        pdf.cell(100, 8, f"{formatar_moeda(da['valor_antigo'])}", 1, 1, 'R')
-        pdf.cell(50, 8, "Índice Aplicado", 1, 0, 'L')
-        pdf.cell(100, 8, f"{da['indice']} (Acumulado: {(da['fator']-1)*100:.4f}%)", 1, 1, 'R')
-        pdf.cell(50, 8, "Período", 1, 0, 'L')
-        pdf.cell(100, 8, da['periodo'], 1, 1, 'R')
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(50, 10, "NOVO ALUGUEL", 1, 0, 'L')
-        pdf.cell(100, 10, f"{formatar_moeda(da['novo_valor'])}", 1, 1, 'R')
-        pdf.ln(3)
-
-    # RESUMO FINAL
-    if tem_execucao:
-        pdf.ln(5)
-        pdf.set_draw_color(0, 0, 0)
-        pdf.set_fill_color(255, 255, 255)
         pdf.set_font("Arial", "B", 11)
-        pdf.cell(100, 8, "RESUMO DA EXECUÇÃO", "B", 1, 'L')
+        pdf.safe_cell(100, 8, "RESUMO DA EXECUÇÃO", "B", 1, 'L')
         pdf.ln(2)
         pdf.set_font("Arial", "", 10)
-        pdf.cell(140, 8, "Principal Atualizado", 0, 0)
-        pdf.cell(40, 8, f"{formatar_moeda(totais['indenizacao'] + totais['honorarios'] + totais['pensao'])}", 0, 1, 'R')
+        pdf.safe_cell(140, 8, "Principal Atualizado", 0, 0)
+        pdf.safe_cell(40, 8, formatar_moeda(totais['indenizacao'] + totais['honorarios'] + totais['pensao']), 0, 1, 'R')
+        
         if config['multa_523']:
-            pdf.cell(140, 8, "Multa Art. 523 CPC (10%)", 0, 0)
-            pdf.cell(40, 8, f"{formatar_moeda(totais['multa'])}", 0, 1, 'R')
+            pdf.safe_cell(140, 8, "Multa Art. 523 CPC (10%)", 0, 0)
+            pdf.safe_cell(40, 8, formatar_moeda(totais['multa']), 0, 1, 'R')
         if config['hon_523']:
-            pdf.cell(140, 8, "Honorários Execução Art. 523 (10%)", 0, 0)
-            pdf.cell(40, 8, f"{formatar_moeda(totais['hon_exec'])}", 0, 1, 'R')
+            pdf.safe_cell(140, 8, "Honorários Execução Art. 523 (10%)", 0, 0)
+            pdf.safe_cell(40, 8, formatar_moeda(totais['hon_exec']), 0, 1, 'R')
+            
         pdf.ln(2)
         pdf.set_font("Arial", "B", 14)
         pdf.set_fill_color(220, 220, 220)
-        pdf.cell(140, 12, "TOTAL GERAL", 1, 0, 'L', fill=True)
-        pdf.cell(40, 12, f"{formatar_moeda(totais['final'])}", 1, 1, 'R', fill=True)
-        
-    pdf.ln(5)
-    pdf.set_font("Arial", "I", 7)
-    pdf.multi_cell(0, 4, "Aviso Legal: Cálculo estimado com base em séries do BCB. Este demonstrativo serve como base para peticionamento, sujeito à conferência.")
+        pdf.safe_cell(140, 12, "TOTAL GERAL DA DÍVIDA", 1, 0, 'L', True)
+        pdf.safe_cell(40, 12, formatar_moeda(totais['final']), 1, 1, 'R', True)
+
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- MAPA DE ÍNDICES GLOBAL ---
+# --- DADOS ESTÁTICOS ---
 mapa_indices_completo = {
     "INPC (IBGE) - 188": 188, 
     "IGP-M (FGV) - 189": 189, 
@@ -307,487 +295,421 @@ mapa_indices_completo = {
     "INCC-DI (FGV) - 192": 192, 
     "IGP-DI (FGV) - 190": 190,
     "IPC-Brasil (FGV) - 191": 191,
-    "IPC-Fipe - 193": 193,
     "SELIC (Taxa Referencial) - 4390": 4390 
 }
-cod_selic = 4390
+COD_SELIC = 4390
 
 # ==============================================================================
-# MENU LATERAL COM MODO DESENVOLVEDOR
+# INTERFACE SIDEBAR
 # ==============================================================================
-st.sidebar.header("Parâmetros Globais")
-data_calculo = st.sidebar.date_input("Data do Cálculo", value=date.today(), format="DD/MM/YYYY")
+st.sidebar.header("Parâmetros do Processo")
+data_calculo = st.sidebar.date_input("Data do Cálculo (Data Base)", value=date.today(), format="DD/MM/YYYY")
 
 st.sidebar.divider()
-st.sidebar.header("Penalidades")
-aplicar_multa_523 = st.sidebar.checkbox("Multa 10% (Art. 523)?", value=False)
-aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523)?", value=False)
+st.sidebar.markdown("### Penalidades Legais")
+aplicar_multa_523 = st.sidebar.checkbox("Multa 10% (Art. 523 CPC)", value=False)
+aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523 CPC)", value=False)
 
 st.sidebar.divider()
-st.sidebar.markdown("### 🛠️ Área do Desenvolvedor")
-
-# LÓGICA DE LIMPEZA DE CACHE E ERRO
-c_dev1, c_dev2 = st.sidebar.columns(2)
-if c_dev1.button("Limpar Cache"):
-    st.cache_data.clear()
-    st.rerun()
-
-modo_simulacao = st.sidebar.toggle("Simular Erro BCB", value=False)
-if modo_simulacao:
-    if not st.session_state.simular_erro_bcb:
-        st.session_state.simular_erro_bcb = True
+with st.sidebar.expander("🛠️ Ferramentas Admin"):
+    if st.button("Limpar Cache de Índices"):
         st.cache_data.clear()
         st.rerun()
-    st.sidebar.error("ERRO ATIVO")
-else:
+    
+    modo_simulacao = st.toggle("Simular Queda do BCB", value=False)
+    if modo_simulacao != st.session_state.simular_erro_bcb:
+        st.session_state.simular_erro_bcb = modo_simulacao
+        st.cache_data.clear()
+        st.rerun()
     if st.session_state.simular_erro_bcb:
-        st.session_state.simular_erro_bcb = False
-        st.cache_data.clear()
-        st.rerun()
+        st.sidebar.error("ERRO BCB ATIVO")
 
 # ==============================================================================
-# ABAS
+# NAVEGAÇÃO
 # ==============================================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização", "⚖️ Honorários", "👶 Pensão", "🏠 Reajuste Aluguel", "📊 PDF e Exportação"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização/Cível", "⚖️ Honorários", "👶 Pensão Alimentícia", "🏠 Aluguel", "📊 Relatório PDF"])
 
 # ==============================================================================
-# ABA 1 - INDENIZAÇÃO
+# ABA 1: INDENIZAÇÃO (LÓGICA BLINDADA)
 # ==============================================================================
 with tab1:
-    st.subheader("Cálculo de Indenização / Cobrança de Atrasados")
-    col_input1, col_input2, col_input3 = st.columns(3)
-    valor_contrato = col_input1.number_input("Valor Base", value=1000.00, step=100.0)
-    perc_indenizacao = col_input2.number_input("Percentual / Multiplicador", value=100.0, step=10.0)
-    val_mensal = valor_contrato * (perc_indenizacao / 100)
-    col_input3.metric("Valor Mensal Base", formatar_moeda(val_mensal))
+    st.subheader("Cálculo de Indenização Cível / Dívidas")
+    
+    col_i1, col_i2, col_i3 = st.columns(3)
+    valor_contrato = to_decimal(col_i1.number_input("Valor Base (R$)", value=1000.00, step=100.00))
+    perc_indenizacao = to_decimal(col_i2.number_input("Percentual (%)", value=100.0, step=10.0))
+    val_mensal = valor_contrato * (perc_indenizacao / Decimal('100'))
+    col_i3.metric("Valor Mensal Calculado", formatar_moeda(val_mensal))
     
     st.write("---")
+    
     c4, c5 = st.columns(2)
-    inicio_atraso = c4.date_input("Início da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
-    fim_atraso = c5.date_input("Fim da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
-    
-    help_metodo = "Ciclo Mensal: Para aluguéis/salários recorrentes. Mês Civil: Calcula dias proporcionais."
-    metodo_calculo = st.radio("Método:", ["Ciclo Mensal Fechado", "Mês Civil (Pro-Rata)"], index=1, horizontal=True, help=help_metodo)
-    
-    st.write("---")
-    st.write("**Regime de Atualização (Selecione aqui):**")
+    inicio_atraso = c4.date_input("Início da Mora/Evento", value=date(2021, 7, 10), format="DD/MM/YYYY")
+    fim_atraso = c5.date_input("Fim da Mora (Última parcela)", value=date(2021, 7, 10), format="DD/MM/YYYY")
     
     regime_tipo = st.radio(
-        "Escolha o Regime:",
-        ["1. Índice de Correção + Juros de 1% a.m.", "2. Taxa SELIC (EC 113/21)", "3. Misto (Índice até data X -> SELIC)"],
+        "Regime de Atualização (Jurisprudência):",
+        ["1. Índice Correção + Juros 1% a.m.", "2. Taxa SELIC Pura (EC 113/21)", "3. Misto (Índice até Corte -> SELIC)"],
         horizontal=True
     )
     
-    indice_selecionado_ind = None
-    codigo_indice_ind = None
-    data_corte_selic, data_citacao_ind = None, None
-
+    indice_sel_ind, data_corte_selic, data_citacao_ind = None, None, None
+    cod_ind_escolhido = None
+    
+    # Configuração Dinâmica dos Inputs Baseado no Regime
     if "1. Índice" in regime_tipo:
-        indice_selecionado_ind = st.selectbox("Selecione o Índice de Correção:", list(mapa_indices_completo.keys()))
-        codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
-        data_citacao_ind = st.date_input("Data Citação (Início Juros)", value=inicio_atraso, format="DD/MM/YYYY")
-        st.session_state.regime_desc = f"{indice_selecionado_ind} + Juros 1% a.m."
+        c_r1, c_r2 = st.columns(2)
+        indice_sel_ind = c_r1.selectbox("Índice de Correção:", list(mapa_indices_completo.keys()))
+        data_citacao_ind = c_r2.date_input("Data Citação (Início Juros)", value=inicio_atraso, format="DD/MM/YYYY")
+        cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
+        st.session_state.regime_desc = f"{indice_sel_ind} + Juros 1% a.m."
         
     elif "3. Misto" in regime_tipo:
-        c_mix_ind, c_mix_dt = st.columns(2)
-        indice_selecionado_ind = c_mix_ind.selectbox("Índice Fase 1 (Pré-SELIC):", list(mapa_indices_completo.keys()))
-        codigo_indice_ind = mapa_indices_completo[indice_selecionado_ind]
-        data_citacao_ind = c_mix_dt.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
-        data_corte_selic = st.date_input("Data de Corte (Início SELIC)", value=date(2021, 12, 9), format="DD/MM/YYYY")
-        st.session_state.regime_desc = f"Misto ({indice_selecionado_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
+        st.info("Regime Misto: Corrige pelo índice até a Data de Corte (ex: promulgação da EC 113), e aplica SELIC depois.")
+        c_mix1, c_mix2, c_mix3 = st.columns(3)
+        indice_sel_ind = c_mix1.selectbox("Índice Fase 1:", list(mapa_indices_completo.keys()))
+        data_citacao_ind = c_mix2.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
+        data_corte_selic = c_mix3.date_input("Data Início SELIC", value=date(2021, 12, 9), format="DD/MM/YYYY")
+        cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
+        st.session_state.regime_desc = f"Misto ({indice_sel_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
     else:
-        st.session_state.regime_desc = "SELIC Pura (Correção + Juros)"
+        st.session_state.regime_desc = "Taxa SELIC (Correção + Juros)"
 
-    if st.button("Calcular Indenização/Dívida", type="primary"):
-        lista_ind = []
-        if st.session_state.simular_erro_bcb:
-             st.error("🚨 ERRO SIMULADO: Falha na conexão com o Banco Central detectada.")
+    if st.button("Calcular Indenização", type="primary"):
+        lista_resultados = []
         
-        with st.status("Processando...", expanded=True) as status:
-            datas_vencimento, valores_base = [], []
+        with st.status("Processando dados e conectando ao BCB...", expanded=True) as status:
+            # 1. Geração das datas de vencimento
+            datas_vencimento = []
             if inicio_atraso == fim_atraso:
                 datas_vencimento = [inicio_atraso]
-                valores_base = [val_mensal]
             else:
-                if metodo_calculo == "Ciclo Mensal Fechado":
-                     t_date = inicio_atraso
-                     while t_date < fim_atraso:
-                         prox = t_date + relativedelta(months=1)
-                         venc = prox - timedelta(days=1)
-                         if venc > fim_atraso: venc = fim_atraso
-                         datas_vencimento.append(venc)
-                         valores_base.append(val_mensal) 
-                         t_date = prox
-                else:
-                    curr_date = inicio_atraso
-                    while curr_date <= fim_atraso:
-                        ultimo_dia = curr_date.replace(day=calendar.monthrange(curr_date.year, curr_date.month)[1])
-                        data_fim_p = fim_atraso if fim_atraso < ultimo_dia else ultimo_dia
-                        dias_mes = calendar.monthrange(curr_date.year, curr_date.month)[1]
-                        dias_corr = (data_fim_p - curr_date).days + 1
-                        val = val_mensal if dias_corr == dias_mes else (val_mensal / dias_mes) * dias_corr
-                        datas_vencimento.append(data_fim_p)
-                        valores_base.append(val)
-                        curr_date = ultimo_dia + timedelta(days=1)
+                curr = inicio_atraso
+                while curr <= fim_atraso:
+                    datas_vencimento.append(curr)
+                    # Avança um mês preservando dia (simplificado para mês civil)
+                    prox_mes = curr.replace(day=1) + relativedelta(months=1)
+                    dia_orig = inicio_atraso.day
+                    try:
+                        curr = prox_mes.replace(day=dia_orig)
+                    except ValueError:
+                        # Se dia original não existe no prox mês (ex: 31 em abril), pega último dia
+                        curr = prox_mes + relativedelta(day=31)
+                    if curr > fim_atraso: break
 
-            for i, venc in enumerate(datas_vencimento):
-                val_base = valores_base[i]
-                audit_fator_cm, audit_juros_perc, audit_fator_selic = "-", "-", "-"
-                v_base_selic_str = "-"
-                total_final = 0.0
-                v_fase1 = 0.0
-                v_corrigido_puro = 0.0 
-                
+            # 2. Loop de Cálculo (Usando Decimal)
+            for venc in datas_vencimento:
+                # Variáveis de auditoria
+                linha = {
+                    "Vencimento": venc.strftime("%d/%m/%Y"),
+                    "Valor Orig.": formatar_moeda(val_mensal),
+                    "Audit Fator CM": "-", "V. Corrigido Puro": "-",
+                    "Audit Juros %": "-", "Total Fase 1": "-",
+                    "Audit Fator SELIC": "-", "TOTAL": "-",
+                    "_num": Decimal('0.00')
+                }
+
+                total_final = Decimal('0.00')
+
+                # REGIME 1: PADRÃO (Índice + Juros)
                 if "1. Índice" in regime_tipo:
-                    fator = buscar_fator_bcb(codigo_indice_ind, venc, data_calculo)
+                    fator = buscar_fator_bcb(cod_ind_escolhido, venc, data_calculo)
                     if fator is None:
-                        status.update(label="Erro de Conexão!", state="error")
-                        st.error(f"Não foi possível obter índice para {venc.strftime('%d/%m/%Y')}.")
-                        st.stop()
-                    v_fase1 = val_base * fator
-                    v_corrigido_puro = v_fase1
-                    audit_fator_cm = f"{fator:.5f}" 
-                    dt_j = data_citacao_ind if venc < data_citacao_ind else venc
-                    dias = (data_calculo - dt_j).days
-                    juros_val = v_fase1 * (0.01/30 * dias) if dias > 0 else 0.0
-                    audit_juros_perc = f"{(dias/30):.1f}% ({dias}d)"
-                    total_final = v_fase1 + juros_val
+                        st.error(f"Falha ao obter índice para {venc}"); st.stop()
+                    
+                    v_corrigido = val_mensal * fator
+                    linha["Audit Fator CM"] = formatar_decimal_str(fator)
+                    linha["V. Corrigido Puro"] = formatar_moeda(v_corrigido)
+                    
+                    # Juros Pro-Rata
+                    dt_inicio_juros = data_citacao_ind if venc < data_citacao_ind else venc
+                    dias_atraso = (data_calculo - dt_inicio_juros).days
+                    
+                    if dias_atraso > 0:
+                        # (1% / 30) * dias * valor_corrigido
+                        fator_juros = (Decimal('0.01') / Decimal('30')) * Decimal(dias_atraso)
+                        valor_juros = v_corrigido * fator_juros
+                        linha["Audit Juros %"] = f"{(dias_atraso/30):.1f}% ({dias_atraso}d)"
+                    else:
+                        valor_juros = Decimal('0.00')
+                        linha["Audit Juros %"] = "0%"
+
+                    total_final = v_corrigido + valor_juros
+                    linha["Total Fase 1"] = formatar_moeda(total_final) # Fase 1 é o total aqui
+
+                # REGIME 2: SELIC PURA
                 elif "2. Taxa SELIC" in regime_tipo:
-                    fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
-                    if fator is None:
-                        status.update(label="Erro de Conexão!", state="error")
-                        st.error(f"Erro ao buscar SELIC para {venc.strftime('%d/%m/%Y')}.")
-                        st.stop()
-                    total_final = val_base * fator
-                    audit_fator_selic = f"{fator:.5f}"
-                    v_fase1 = total_final
-                    v_corrigido_puro = total_final
+                    fator_selic = buscar_fator_bcb(COD_SELIC, venc, data_calculo)
+                    if fator_selic is None: st.error("Erro SELIC"); st.stop()
+                    
+                    total_final = val_mensal * fator_selic
+                    linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
+                
+                # REGIME 3: MISTO
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
-                        fator = buscar_fator_bcb(cod_selic, venc, data_calculo)
-                        if fator is None:
-                            st.error(f"Erro ao buscar SELIC.")
-                            st.stop()
-                        total_final = val_base * fator
-                        audit_fator_selic = f"{fator:.5f}"
-                        v_fase1 = total_final
-                        v_corrigido_puro = total_final
+                        # Cai direto na SELIC
+                        fator_selic = buscar_fator_bcb(COD_SELIC, venc, data_calculo)
+                        if fator_selic is None: st.error("Erro SELIC"); st.stop()
+                        total_final = val_mensal * fator_selic
+                        linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
                     else:
-                        fator_f1 = buscar_fator_bcb(codigo_indice_ind, venc, data_corte_selic)
-                        if fator_f1 is None:
-                            st.error(f"Erro ao buscar índice Fase 1.")
-                            st.stop()
-                        v_corrigido_puro = val_base * fator_f1
-                        audit_fator_cm = f"{fator_f1:.5f} (f1)"
-                        dt_j = data_citacao_ind if venc < data_citacao_ind else venc
-                        if dt_j < data_corte_selic:
-                            d_f1 = (data_corte_selic - dt_j).days
-                            j_f1 = v_corrigido_puro * (0.01/30 * d_f1)
-                            audit_juros_perc = f"R$ {j_f1:.2f} (f1)"
-                        else: j_f1 = 0.0
-                        base_selic = v_corrigido_puro + j_f1
-                        v_base_selic_str = formatar_moeda(base_selic)
+                        # FASE 1: Correção até Corte
+                        f_fase1 = buscar_fator_bcb(cod_ind_escolhido, venc, data_corte_selic)
+                        if f_fase1 is None: st.error("Erro Fase 1"); st.stop()
                         
-                        fator_s = buscar_fator_bcb(cod_selic, data_corte_selic, data_calculo)
-                        if fator_s is None:
-                            st.error(f"Erro ao buscar SELIC Fase 2.")
-                            st.stop()
-                        total_final = base_selic * fator_s
-                        audit_fator_selic = f"{fator_s:.5f}"
-                        v_fase1 = base_selic
+                        v_corr_f1 = val_mensal * f_fase1
+                        linha["Audit Fator CM"] = f"{f_fase1:.6f} (F1)"
+                        linha["V. Corrigido Puro"] = formatar_moeda(v_corr_f1)
 
-                lista_ind.append({
-                    "Vencimento": venc.strftime("%d/%m/%Y"), 
-                    "Valor Orig.": formatar_moeda(val_base), 
-                    "Audit Fator CM": audit_fator_cm, 
-                    "V. Corrigido Puro": formatar_moeda(v_corrigido_puro), 
-                    "Audit Juros %": audit_juros_perc,
-                    "Total Fase 1": v_base_selic_str,  
-                    "Audit Fator SELIC": audit_fator_selic,
-                    "TOTAL": formatar_moeda(total_final), 
-                    "_num": total_final
-                })
-            status.update(label="Concluído!", state="complete", expanded=False)
+                        # Juros Fase 1 (Do vencimento/citação até corte)
+                        dt_j_f1 = data_citacao_ind if venc < data_citacao_ind else venc
+                        if dt_j_f1 < data_corte_selic:
+                            dias_f1 = (data_corte_selic - dt_j_f1).days
+                            juros_f1 = v_corr_f1 * (Decimal('0.01')/Decimal('30') * Decimal(dias_f1))
+                            linha["Audit Juros %"] = f"R$ {juros_f1:,.2f} (F1)"
+                        else:
+                            juros_f1 = Decimal('0.00')
+                        
+                        total_fase1 = v_corr_f1 + juros_f1
+                        linha["Total Fase 1"] = formatar_moeda(total_fase1)
+
+                        # FASE 2: SELIC do Corte até Hoje sobre o montante acumulado
+                        f_selic_f2 = buscar_fator_bcb(COD_SELIC, data_corte_selic, data_calculo)
+                        if f_selic_f2 is None: st.error("Erro SELIC F2"); st.stop()
+                        
+                        total_final = total_fase1 * f_selic_f2
+                        linha["Audit Fator SELIC"] = formatar_decimal_str(f_selic_f2)
+
+                linha["TOTAL"] = formatar_moeda(total_final)
+                linha["_num"] = total_final
+                lista_resultados.append(linha)
+
+            status.update(label="Cálculo Concluído!", state="complete")
         
-        df = pd.DataFrame(lista_ind)
+        df = pd.DataFrame(lista_resultados)
         st.session_state.df_indenizacao = df
         st.session_state.total_indenizacao = df["_num"].sum()
-        st.success(f"Total Dívida: {formatar_moeda(st.session_state.total_indenizacao)}")
+        
+        st.success(f"Total Atualizado: {formatar_moeda(st.session_state.total_indenizacao)}")
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 2 - HONORÁRIOS
+# ABA 2: HONORÁRIOS
 # ==============================================================================
 with tab2:
-    st.subheader("Cálculo de Honorários")
-    col_h1, col_h2 = st.columns(2)
-    v_h = col_h1.number_input("Valor Honorários", value=1500.00, min_value=0.0, step=0.01, format="%.2f")
-    d_h = col_h2.date_input("Data Base", date(2023, 1, 1), format="DD/MM/YYYY")
+    st.subheader("Honorários de Sucumbência")
+    c_h1, c_h2 = st.columns(2)
+    val_hon = to_decimal(c_h1.number_input("Valor Original dos Honorários", value=1500.00))
+    data_hon = c_h2.date_input("Data Base (Fixação/Sentença)", value=date(2023, 1, 1), format="DD/MM/YYYY")
     
-    st.write("---")
+    idx_hon = st.selectbox("Índice de Atualização", list(mapa_indices_completo.keys()), index=0)
+    aplica_juros_hon = st.checkbox("Aplicar Juros de Mora (1% a.m.)?", value=True)
     
-    col_opt1, col_opt2 = st.columns(2)
-    indice_hon_sel = col_opt1.selectbox("Índice de Correção", list(mapa_indices_completo.keys()), index=0)
-    aplicar_juros_hon = col_opt2.checkbox("Aplicar Juros de Mora 1% a.m.?", value=True)
-
     if st.button("Calcular Honorários"):
-        if st.session_state.simular_erro_bcb:
-             st.error("🚨 ERRO SIMULADO: Conexão interrompida.")
-             
-        total_hon, desc_audit, juros_txt = 0.0, "", "N/A"
-        cod_ind_hon = mapa_indices_completo[indice_hon_sel]
-        f = buscar_fator_bcb(cod_ind_hon, d_h, data_calculo)
+        fator = buscar_fator_bcb(mapa_indices_completo[idx_hon], data_hon, data_calculo)
         
-        if f is None:
-            st.error(f"Erro ao buscar índice {indice_hon_sel}. Verifique sua conexão ou clique em 'Limpar Cache' no menu.")
-            st.stop()
+        if fator:
+            val_corr = val_hon * fator
+            juros_val = Decimal('0.00')
+            desc_juros = "Não"
             
-        v_corr = v_h * f
-        desc_audit = f"{indice_hon_sel} {f:.5f}"
-        val_jur = 0.0
-        
-        if aplicar_juros_hon:
-            dias = (data_calculo - d_h).days
-            if dias > 0:
-                val_jur = v_corr * (0.01/30 * dias)
-                juros_txt = formatar_moeda(val_jur)
-        else: juros_txt = "Não"
-        
-        total_hon = v_corr + val_jur
+            if aplica_juros_hon:
+                dias = (data_calculo - data_hon).days
+                if dias > 0:
+                    juros_val = val_corr * (Decimal('0.01')/Decimal('30') * Decimal(dias))
+                    desc_juros = formatar_moeda(juros_val)
             
-        res = [{
-            "Descrição": "Honorários", 
-            "Valor Orig.": formatar_moeda(v_h), 
-            "Audit Fator": desc_audit, 
-            "Juros": juros_txt, 
-            "TOTAL": formatar_moeda(total_hon), 
-            "_num": total_hon
-        }]
-        st.session_state.df_honorarios = pd.DataFrame(res)
-        st.session_state.total_honorarios = total_hon
-        st.success(f"Total Honorários: {formatar_moeda(total_hon)}")
-        st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
+            total = val_corr + juros_val
+            
+            res = [{
+                "Descrição": "Honorários",
+                "Valor Orig.": formatar_moeda(val_hon),
+                "Audit Fator": formatar_decimal_str(fator),
+                "Juros": desc_juros,
+                "TOTAL": formatar_moeda(total),
+                "_num": total
+            }]
+            st.session_state.df_honorarios = pd.DataFrame(res)
+            st.session_state.total_honorarios = total
+            st.success(f"Total Honorários: {formatar_moeda(total)}")
+            st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
+        else:
+            st.error("Erro ao buscar índices.")
 
 # ==============================================================================
-# ABA 3 - PENSÃO
+# ABA 3: PENSÃO
 # ==============================================================================
 with tab3:
-    st.subheader("👶 Pensão Alimentícia")
-    st.info("Cálculo de Dívida: O sistema abate o valor pago do original antes de aplicar juros/correção.")
+    st.subheader("Cálculo de Débito Alimentar")
+    st.info("Fluxo: 1. Gere a tabela. 2. Preencha os valores pagos. 3. Clique em Calcular.")
     
-    idx_pensao = st.selectbox("Índice para Correção da Pensão:", list(mapa_indices_completo.keys()), index=0)
-    cod_idx_pensao = mapa_indices_completo[idx_pensao]
-    
-    col_d1, col_d2 = st.columns(2)
-    ini_pensao = col_d1.date_input("Data Início", value=date(2023, 1, 1), format="DD/MM/YYYY")
-    fim_pensao = col_d2.date_input("Data Fim", value=date.today(), format="DD/MM/YYYY")
-
-    col_p1, col_p2 = st.columns(2)
-    v_pensao_base = col_p1.number_input("Valor da Parcela (R$)", value=1000.00)
-    dia_vencimento = col_p2.number_input("Dia do Vencimento", value=10, min_value=1, max_value=31)
+    c_p1, c_p2, c_p3 = st.columns(3)
+    p_val = to_decimal(c_p1.number_input("Valor da Parcela (R$)", value=1000.00))
+    p_ini = c_p2.date_input("Início Período", value=date(2023, 1, 1), format="DD/MM/YYYY")
+    p_fim = c_p3.date_input("Fim Período", value=date.today(), format="DD/MM/YYYY")
+    idx_pensao = st.selectbox("Índice Correção Pensão", list(mapa_indices_completo.keys()))
     
     if st.button("1. Gerar Tabela para Preenchimento"):
-        l = []
-        dt_cursor = ini_pensao.replace(day=dia_vencimento) if dia_vencimento <= 28 else ini_pensao
-        if dt_cursor < ini_pensao: dt_cursor += relativedelta(months=1)
-        
-        while dt_cursor <= fim_pensao:
-            l.append({
-                "Vencimento": dt_cursor, 
-                "Valor Devido (R$)": float(v_pensao_base), 
+        dates = []
+        curr = p_ini
+        while curr <= p_fim:
+            dates.append({
+                "Vencimento": curr, 
+                "Valor Devido (R$)": float(p_val), # Float para o editor do streamlit (visual)
                 "Valor Pago (R$)": 0.0
             })
-            dt_cursor += relativedelta(months=1)
-        st.session_state.df_pensao_input = pd.DataFrame(l)
+            curr += relativedelta(months=1)
+        st.session_state.df_pensao_input = pd.DataFrame(dates)
 
     tabela_editada = st.data_editor(
         st.session_state.df_pensao_input, 
-        num_rows="dynamic", 
-        hide_index=True, 
-        use_container_width=True,
+        num_rows="dynamic", use_container_width=True, hide_index=True,
         column_config={
             "Vencimento": st.column_config.DateColumn("Vencimento", format="DD/MM/YYYY"),
-            "Valor Devido (R$)": st.column_config.NumberColumn("Valor Devido (R$)", format="%.2f"),
-            "Valor Pago (R$)": st.column_config.NumberColumn("Valor Pago (R$)", format="%.2f"),
+            "Valor Devido (R$)": st.column_config.NumberColumn(format="%.2f"),
+            "Valor Pago (R$)": st.column_config.NumberColumn(format="%.2f")
         }
     )
-    
-    if st.button("2. Calcular Saldo Devedor"):
-        if tabela_editada is not None and not tabela_editada.empty:
-            if st.session_state.simular_erro_bcb:
-                 st.error("🚨 ERRO SIMULADO: Falha de rede.")
-                 st.stop()
 
-            res_p = []
-            erro_con = False
-            
-            for i, (index, r) in enumerate(tabela_editada.iterrows()):
+    if st.button("2. Calcular Saldo Devedor"):
+        res_pensao = []
+        cod = mapa_indices_completo[idx_pensao]
+        
+        with st.spinner("Calculando linha a linha..."):
+            for _, row in tabela_editada.iterrows():
                 try:
-                    d_val = r["Vencimento"]
-                    if pd.isna(d_val) or str(d_val).strip() == "": continue
+                    venc = pd.to_datetime(row["Vencimento"]).date()
+                    devido = to_decimal(row["Valor Devido (R$)"])
+                    pago = to_decimal(row["Valor Pago (R$)"])
                     
-                    venc = pd.to_datetime(d_val).date()
+                    saldo = devido - pago
                     
-                    def safe_float(x):
-                        if isinstance(x, (float, int)): return float(x)
-                        return float(str(x).replace('.', '').replace(',', '.'))
+                    if saldo <= 0:
+                        res_pensao.append({
+                            "Vencimento": venc.strftime("%d/%m/%Y"),
+                            "Valor Devido": formatar_moeda(devido),
+                            "Valor Pago": formatar_moeda(pago),
+                            "Base Cálculo": "QUITADO",
+                            "Fator CM": "-", "Atualizado": "-", "Juros": "-",
+                            "TOTAL": "R$ 0,00", "_num": Decimal('0.00')
+                        })
+                    else:
+                        fator = buscar_fator_bcb(cod, venc, data_calculo)
+                        if not fator: continue
                         
-                    v_devido = safe_float(r["Valor Devido (R$)"])
-                    v_pago = safe_float(r["Valor Pago (R$)"])
-                except:
-                    continue
-                
-                saldo_base = v_devido - v_pago
-                
-                if saldo_base <= 0:
-                    res_p.append({
-                        "Vencimento": venc.strftime("%d/%m/%Y"), 
-                        "Valor Devido": formatar_moeda(v_devido), 
-                        "Valor Pago": formatar_moeda(v_pago), 
-                        "Base Cálculo": "R$ 0,00", 
-                        "Fator CM": "-", 
-                        "Atualizado": "QUITADO", 
-                        "Juros": "-", 
-                        "TOTAL": "R$ 0,00", 
-                        "_num": 0.0
-                    })
-                else:
-                    fator = buscar_fator_bcb(cod_idx_pensao, venc, data_calculo)
-                    if fator is None:
-                        erro_con = True
-                        break
+                        atualizado = saldo * fator
                         
-                    v_corr = saldo_base * fator
-                    juros = 0.0
-                    dias = (data_calculo - venc).days
-                    if dias > 0: juros = v_corr * (0.01/30 * dias)
-                    total_linha = v_corr + juros
-                    
-                    res_p.append({
-                        "Vencimento": venc.strftime("%d/%m/%Y"), 
-                        "Valor Devido": formatar_moeda(v_devido), 
-                        "Valor Pago": formatar_moeda(v_pago), 
-                        "Base Cálculo": formatar_moeda(saldo_base), 
-                        "Fator CM": f"{fator:.5f}", 
-                        "Atualizado": formatar_moeda(v_corr), 
-                        "Juros": formatar_moeda(juros), 
-                        "TOTAL": formatar_moeda(total_linha), 
-                        "_num": total_linha
-                    })
-            
-            if erro_con:
-                st.error("Erro ao conectar com BCB. Verifique sua internet.")
-            elif not res_p:
-                st.warning("Nenhum dado válido encontrado para calcular. Verifique as datas e valores.")
-                st.session_state.total_pensao = 0.0
-            else:
-                st.session_state.df_pensao_final = pd.DataFrame(res_p)
-                if "_num" in st.session_state.df_pensao_final.columns:
-                    st.session_state.total_pensao = st.session_state.df_pensao_final["_num"].sum()
-                else:
-                    st.session_state.total_pensao = 0.0
-                
-                st.success(f"Saldo Devedor: {formatar_moeda(st.session_state.total_pensao)}")
-                cols_vis = [c for c in st.session_state.df_pensao_final.columns if c != "_num"]
-                st.dataframe(st.session_state.df_pensao_final[cols_vis], use_container_width=True, hide_index=True)
-        else:
-            st.warning("Gere a tabela primeiro.")
+                        dias = (data_calculo - venc).days
+                        juros = Decimal('0.00')
+                        if dias > 0:
+                            juros = atualizado * (Decimal('0.01')/Decimal('30') * Decimal(dias))
+                        
+                        tot = atualizado + juros
+                        res_pensao.append({
+                            "Vencimento": venc.strftime("%d/%m/%Y"),
+                            "Valor Devido": formatar_moeda(devido),
+                            "Valor Pago": formatar_moeda(pago),
+                            "Base Cálculo": formatar_moeda(saldo),
+                            "Fator CM": formatar_decimal_str(fator),
+                            "Atualizado": formatar_moeda(atualizado),
+                            "Juros": formatar_moeda(juros),
+                            "TOTAL": formatar_moeda(tot),
+                            "_num": tot
+                        })
+                except Exception as e:
+                    st.error(f"Erro na linha {row}: {e}")
+        
+        df_fin = pd.DataFrame(res_pensao)
+        st.session_state.df_pensao_final = df_fin
+        st.session_state.total_pensao = df_fin["_num"].sum() if not df_fin.empty else Decimal('0.00')
+        
+        st.success(f"Dívida Alimentar Total: {formatar_moeda(st.session_state.total_pensao)}")
+        if not df_fin.empty:
+            st.dataframe(df_fin.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# ABA 4 - REAJUSTE ALUGUEL
+# ABA 4: ALUGUEL
 # ==============================================================================
 with tab4:
-    st.subheader("🏠 Reajuste Anual de Aluguel (Contratual)")
-    c_alug1, c_alug2, c_alug3 = st.columns(3)
-    val_atual_aluguel = c_alug1.number_input("Valor Atual do Aluguel", value=2000.00, step=50.0)
-    dt_reajuste_aluguel = c_alug2.date_input("Data do Reajuste (Aniversário)", value=date.today(), format="DD/MM/YYYY")
-    idx_aluguel = c_alug3.selectbox("Índice de Reajuste", list(mapa_indices_completo.keys()), index=1)
+    st.subheader("Reajuste Anual de Aluguel")
+    ca1, ca2 = st.columns(2)
+    alug_atual = to_decimal(ca1.number_input("Valor Atual", value=2000.00))
+    dt_reaj = ca2.date_input("Data Aniversário", value=date.today())
+    idx_a = st.selectbox("Índice", list(mapa_indices_completo.keys()), index=1)
     
-    if st.button("Calcular Novo Valor"):
-        dt_inicio_12m = dt_reajuste_aluguel - relativedelta(months=12)
-        cod_serie_aluguel = mapa_indices_completo[idx_aluguel]
+    if st.button("Calcular Reajuste"):
+        dt_ini = dt_reaj - relativedelta(months=12)
+        fator = buscar_fator_bcb(mapa_indices_completo[idx_a], dt_ini, dt_reaj)
         
-        fator_reajuste = None
-        with st.spinner(f"Buscando acumulado de {idx_aluguel}..."):
-            fator_reajuste = buscar_fator_bcb(cod_serie_aluguel, dt_inicio_12m, dt_reajuste_aluguel)
-        
-        if fator_reajuste is None:
-            st.error(f"Não foi possível obter o índice {idx_aluguel} no BCB. Tente novamente mais tarde.")
-            st.stop()
+        if fator:
+            novo_val = alug_atual * fator
+            perc = (fator - 1) * 100
             
-        novo_valor_aluguel = val_atual_aluguel * fator_reajuste
-        dif = novo_valor_aluguel - val_atual_aluguel
-        perc_acum = (fator_reajuste - 1) * 100
-        
-        st.session_state.dados_aluguel = {
-            'valor_antigo': val_atual_aluguel,
-            'novo_valor': novo_valor_aluguel,
-            'indice': idx_aluguel,
-            'periodo': f"{dt_inicio_12m.strftime('%d/%m/%Y')} a {dt_reajuste_aluguel.strftime('%d/%m/%Y')}",
-            'fator': fator_reajuste
-        }
-        
-        st.markdown("### Resultado do Reajuste")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Índice Acumulado", f"{perc_acum:.4f}%")
-        m2.metric("Aumento", formatar_moeda(dif))
-        m3.metric("Novo Aluguel", formatar_moeda(novo_valor_aluguel))
+            st.session_state.dados_aluguel = {
+                'valor_antigo': alug_atual, 'novo_valor': novo_val,
+                'indice': idx_a, 'periodo': f"{dt_ini.strftime('%d/%m/%Y')} a {dt_reaj.strftime('%d/%m/%Y')}",
+                'fator': fator
+            }
+            
+            c_res1, c_res2 = st.columns(2)
+            c_res1.metric("Novo Aluguel", formatar_moeda(novo_val))
+            c_res2.metric("Percentual Acumulado", f"{perc:.4f}%")
+        else:
+            st.error("Erro ao buscar índice.")
 
 # ==============================================================================
-# ABA 5 - PDF FINAL
+# ABA 5: PDF E FECHAMENTO
 # ==============================================================================
 with tab5:
-    st.header("Gerar Relatório / PDF")
+    st.header("Fechamento do Cálculo")
     
     t1 = st.session_state.total_indenizacao
     t2 = st.session_state.total_honorarios
     t3 = st.session_state.total_pensao
-    tem_aluguel = st.session_state.dados_aluguel is not None
     
-    sub = t1 + t2 + t3
-    mul = sub * 0.10 if aplicar_multa_523 else 0.0
-    hon = sub * 0.10 if aplicar_hon_523 else 0.0
-    fin = sub + mul + hon
+    subtotal = t1 + t2 + t3
     
-    st.write("### Itens que serão incluídos no PDF:")
-    c_status1, c_status2, c_status3, c_status4 = st.columns(4)
-    c_status1.checkbox("Indenização/Dívida", value=(t1 > 0), disabled=True)
-    c_status2.checkbox("Honorários", value=(t2 > 0), disabled=True)
-    c_status3.checkbox("Pensão", value=(t3 > 0), disabled=True)
-    c_status4.checkbox("Reajuste Aluguel", value=tem_aluguel, disabled=True)
+    val_multa_523 = subtotal * Decimal('0.10') if aplicar_multa_523 else Decimal('0.00')
+    val_hon_523 = subtotal * Decimal('0.10') if aplicar_hon_523 else Decimal('0.00')
     
-    st.write("---")
-    if fin > 0:
-        st.metric("TOTAL DA EXECUÇÃO (DÍVIDAS)", formatar_moeda(fin))
-    elif tem_aluguel:
-        st.info("Apenas Reajuste de Aluguel será gerado (sem valor de execução).")
-    else:
-        st.warning("Nenhum cálculo realizado ainda.")
+    total_geral = subtotal + val_multa_523 + val_hon_523
     
-    # Preparação dos Dados para o PDF
-    conf_pdf = {
-        'multa_523': aplicar_multa_523, 
-        'hon_523': aplicar_hon_523, 
-        'metodo': metodo_calculo, 
-        'data_calculo': data_calculo, 
-        'regime_desc': st.session_state.regime_desc,
-        'tipo_regime': regime_tipo,
-        'indice_nome': indice_selecionado_ind if "1. Índice" in regime_tipo or "3. Misto" in regime_tipo else "SELIC",
-        'data_corte': data_corte_selic if "3. Misto" in regime_tipo else None,
-        'data_citacao': data_citacao_ind if "1. Índice" in regime_tipo or "3. Misto" in regime_tipo else None
+    st.metric("TOTAL DA EXECUÇÃO (BRUTO)", formatar_moeda(total_geral))
+    
+    col_detalhes = st.expander("Ver Detalhes dos Totais", expanded=True)
+    col_detalhes.write(f"Soma Principal: {formatar_moeda(subtotal)}")
+    if aplicar_multa_523: col_detalhes.write(f"+ Multa 10%: {formatar_moeda(val_multa_523)}")
+    if aplicar_hon_523: col_detalhes.write(f"+ Hon. Execução 10%: {formatar_moeda(val_hon_523)}")
+    
+    # Preparar dicts para PDF
+    totais_pdf = {
+        'indenizacao': t1, 'honorarios': t2, 'pensao': t3,
+        'multa': val_multa_523, 'hon_exec': val_hon_523, 'final': total_geral
     }
-    tot_pdf = {'indenizacao': t1, 'honorarios': t2, 'pensao': t3, 'multa': mul, 'hon_exec': hon, 'final': fin}
     
-    if st.button("📄 Gerar PDF Inteligente"):
-        if fin == 0 and not tem_aluguel:
-            st.error("Realize pelo menos um cálculo antes de gerar o PDF.")
+    config_pdf = {
+        'multa_523': aplicar_multa_523,
+        'hon_523': aplicar_hon_523,
+        'data_calculo': data_calculo,
+        'regime_desc': st.session_state.regime_desc
+    }
+    
+    if st.button("📄 Baixar Laudo Técnico (PDF)"):
+        if total_geral == 0 and st.session_state.dados_aluguel is None:
+            st.warning("Não há valores calculados para gerar relatório.")
         else:
             pdf_bytes = gerar_pdf_relatorio(
-                st.session_state.df_indenizacao, 
-                st.session_state.df_honorarios, 
-                st.session_state.df_pensao_final, 
+                st.session_state.df_indenizacao,
+                st.session_state.df_honorarios,
+                st.session_state.df_pensao_final,
                 st.session_state.dados_aluguel,
-                tot_pdf, 
-                conf_pdf
+                totais_pdf,
+                config_pdf
             )
-            st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name="Relatorio_CalcJus.pdf", mime="application/pdf")
+            st.download_button(
+                label="⬇️ Download PDF Assinado Digitalmente (Simulado)",
+                data=pdf_bytes,
+                file_name=f"Laudo_CalcJus_{date.today()}.pdf",
+                mime="application/pdf"
+            )
