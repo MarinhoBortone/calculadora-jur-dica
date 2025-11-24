@@ -15,7 +15,7 @@ getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
 # Configuração da Página
-st.set_page_config(page_title="CalcJus Pro 4.2 (Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.3 (Refatorado)", layout="wide", page_icon="⚖️")
 
 # CSS Otimizado
 st.markdown("""
@@ -28,7 +28,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.2 - Sistema Integrado")
+st.title("⚖️ CalcJus PRO 4.3 - Sistema Integrado")
 st.markdown("Cálculos Judiciais com Precisão Decimal e Relatórios Detalhados.")
 
 # --- 2. ESTADO DA SESSÃO (SESSION STATE) ---
@@ -61,12 +61,25 @@ for var, default in state_vars.items():
 # --- 3. FUNÇÕES UTILITÁRIAS (ENGINE FINANCEIRA) ---
 
 def to_decimal(valor):
-    """Converte qualquer input (float, string, int) para Decimal de forma segura."""
+    """
+    Converte input para Decimal de forma BLINDADA.
+    Resolve o problema do 'ponto do teclado numérico'.
+    """
     if not valor: return Decimal('0.00')
     try:
+        # Se já for número (vindo de cálculo interno), converte direto
+        if isinstance(valor, (float, int, Decimal)):
+            return Decimal(str(valor))
+
         if isinstance(valor, str):
-            # Remove formatação brasileira (1.000,00 -> 1000.00)
-            valor = valor.replace('.', '').replace(',', '.')
+            valor = valor.strip()
+            # LÓGICA DE PROTEÇÃO:
+            # Se a string tem vírgula, é inequivocamente formato BR (ex: 1.000,00 ou 10,50)
+            if ',' in valor:
+                valor = valor.replace('.', '').replace(',', '.')
+            # Se NÃO tem vírgula, mas tem ponto (ex: "125.50"), assumimos que é
+            # separador decimal e NÃO removemos.
+            
         return Decimal(str(valor))
     except:
         return Decimal('0.00')
@@ -189,17 +202,16 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     indice_nome = config.get('indice_nome', 'Índice Oficial')
     
     if "Misto" in tipo_regime:
-        # Recupera as datas salvas para exibir no texto
         dt_corte = config.get('data_corte').strftime("%d/%m/%Y") if config.get('data_corte') else "-"
         dt_cit = config.get('data_citacao').strftime("%d/%m/%Y") if config.get('data_citacao') else "-"
         
         texto_explicativo += (
             f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
-            f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
+            f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente e evitar anatocismo:\n"
             f"1. FASE PRÉ-SELIC (Do vencimento até {dt_corte}): O valor original foi corrigido monetariamente pelo índice '{indice_nome}'. "
             f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit} até {dt_corte}.\n"
-            f"2. FASE SELIC (De {dt_corte} até {dt_calc}): O montante total acumulado na Fase 1 foi consolidado e, a partir desta data ({dt_corte}), "
-            f"atualizado exclusivamente pela variação da Taxa SELIC, vedada a cumulação com outros índices."
+            f"2. FASE SELIC (De {dt_corte} até {dt_calc}): A partir da data de corte ({dt_corte}), a atualização ocorreu exclusivamente pela variação da Taxa SELIC "
+            f"incidindo sobre o PRINCIPAL CORRIGIDO da Fase 1. Os juros moratórios acumulados na Fase 1 foram somados ao montante final sem nova incidência de juros."
         )
     elif "SELIC" in tipo_regime:
         texto_explicativo += (
@@ -435,7 +447,7 @@ with tab1:
         desc_regime_txt = f"{indice_sel_ind} + Juros 1% a.m."
         
     elif "3. Misto" in regime_tipo:
-        st.info("Regime Misto: Corrige pelo índice até a Data de Corte (ex: promulgação da EC 113), e aplica SELIC depois.")
+        st.info("Regime Misto: Corrige pelo índice até a Data de Corte (ex: promulgação da EC 113), e aplica SELIC depois. *OBS: SELIC incidirá apenas sobre o principal atualizado.*")
         c_mix1, c_mix2, c_mix3 = st.columns(3)
         indice_sel_ind = c_mix1.selectbox("Índice Fase 1:", list(mapa_indices_completo.keys()))
         data_citacao_ind = c_mix2.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
@@ -521,7 +533,7 @@ with tab1:
                     total_final = val_mensal * fator_selic
                     linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
                 
-                # REGIME 3: MISTO
+                # REGIME 3: MISTO (CORREÇÃO DE ANATOCISMO APLICADA)
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
                         # Cai direto na SELIC
@@ -550,12 +562,17 @@ with tab1:
                         total_fase1 = v_corr_f1 + juros_f1
                         linha["Total Fase 1"] = formatar_moeda(total_fase1)
 
-                        # FASE 2: SELIC do Corte até Hoje sobre o montante acumulado
+                        # FASE 2: SELIC do Corte até Hoje APENAS SOBRE O PRINCIPAL
                         f_selic_f2 = buscar_fator_bcb(COD_SELIC, data_corte_selic, data_calculo)
                         if f_selic_f2 is None: st.error("Erro SELIC F2"); st.stop()
                         
-                        total_final = total_fase1 * f_selic_f2
-                        linha["Audit Fator SELIC"] = formatar_decimal_str(f_selic_f2)
+                        # CORREÇÃO: SELIC incide sobre o Principal Corrigido da Fase 1, não sobre os juros.
+                        principal_atualizado_selic = v_corr_f1 * f_selic_f2
+                        
+                        # Soma-se os juros antigos (nominais ou "congelados")
+                        total_final = principal_atualizado_selic + juros_f1
+                        
+                        linha["Audit Fator SELIC"] = f"{f_selic_f2:.6f} (S/ Princ.)"
 
                 linha["TOTAL"] = formatar_moeda(total_final)
                 linha["_num"] = total_final
@@ -790,3 +807,4 @@ with tab5:
                 file_name=f"Laudo_CalcJus_{date.today()}.pdf",
                 mime="application/pdf"
             )
+        
