@@ -9,28 +9,30 @@ from decimal import Decimal, ROUND_HALF_UP, getcontext
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# --- CONFIGURAÇÃO FINANCEIRA E GLOBAL ---
-# Define precisão global para evitar erros de dízima, mas arredonda apenas na exibição
+# --- 1. CONFIGURAÇÃO FINANCEIRA E GLOBAL ---
+# Define precisão global para evitar erros de dízima (padrão bancário)
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
 # Configuração da Página
-st.set_page_config(page_title="CalcJus Pro 4.0 (Blindado)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.1 (Final)", layout="wide", page_icon="⚖️")
 
 # CSS Otimizado
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem; color: #0044cc; font-weight: bold; }
     .stAlert { padding: 0.5rem; border-radius: 8px; }
+    /* Esconde índices de tabelas para visual mais limpo */
     thead tr th:first-child { display:none }
     tbody th { display:none }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.0 - Núcleo Financeiro Blindado")
-st.markdown("Sistema de cálculos judiciais com precisão bancária (Decimal Engine) e conexão resiliente.")
+st.title("⚖️ CalcJus PRO 4.1 - Sistema Integrado")
+st.markdown("Cálculos Judiciais com Precisão Decimal e Relatórios Detalhados.")
 
-# --- ESTADO DA SESSÃO ---
+# --- 2. ESTADO DA SESSÃO (SESSION STATE) ---
+# Inicializa variáveis para não dar erro ao abrir o app
 state_vars = {
     'simular_erro_bcb': False,
     'total_indenizacao': Decimal('0.00'),
@@ -41,32 +43,40 @@ state_vars = {
     'df_pensao_input': pd.DataFrame(columns=["Vencimento", "Valor Devido (R$)", "Valor Pago (R$)"]),
     'df_pensao_final': pd.DataFrame(),
     'dados_aluguel': None,
-    'regime_desc': "Padrão"
+    # Armazena os parâmetros exatos usados no último cálculo para o PDF
+    'params_relatorio': {
+        'regime_desc': 'Padrão',
+        'tipo_regime': 'Padrão',
+        'indice_nome': 'Índice',
+        'data_corte': None,
+        'data_citacao': None,
+        'data_calculo': date.today()
+    }
 }
 
 for var, default in state_vars.items():
     if var not in st.session_state:
         st.session_state[var] = default
 
-# --- FUNÇÕES UTILITÁRIAS (ENGINE FINANCEIRA) ---
+# --- 3. FUNÇÕES UTILITÁRIAS (ENGINE FINANCEIRA) ---
 
 def to_decimal(valor):
-    """Converte qualquer input para Decimal de forma segura."""
+    """Converte qualquer input (float, string, int) para Decimal de forma segura."""
     if not valor: return Decimal('0.00')
     try:
         if isinstance(valor, str):
-            # Remove formatação brasileira antes de converter
+            # Remove formatação brasileira (1.000,00 -> 1000.00)
             valor = valor.replace('.', '').replace(',', '.')
         return Decimal(str(valor))
     except:
         return Decimal('0.00')
 
 def formatar_moeda(valor):
-    """Formata Decimal para string BRL."""
+    """Formata Decimal para string BRL (R$ X.XXX,XX)."""
     try:
         if not isinstance(valor, Decimal):
             valor = to_decimal(valor)
-        # Arredonda para 2 casas para exibição
+        # Arredonda para 2 casas apenas para exibição
         valor_ajustado = valor.quantize(DOIS_DECIMAIS, rounding=ROUND_HALF_UP)
         texto = f"R$ {valor_ajustado:,.2f}"
         return texto.replace(",", "X").replace(".", ",").replace("X", ".")
@@ -74,10 +84,10 @@ def formatar_moeda(valor):
         return "R$ 0,00"
 
 def formatar_decimal_str(valor):
-    """Retorna string de número float para uso em logs/auditoria."""
+    """Retorna string do número com 6 casas decimais para auditoria."""
     return f"{valor:.6f}"
 
-# --- CONEXÃO ROBUSTA COM BANCO CENTRAL ---
+# --- 4. CONEXÃO ROBUSTA COM BANCO CENTRAL ---
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
@@ -126,65 +136,97 @@ def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
     except Exception:
         return None
 
-# --- GERAÇÃO DE PDF PROFISSIONAL ---
+# --- 5. GERAÇÃO DE PDF PROFISSIONAL (COM MEMORIAL DESCRITIVO DETALHADO) ---
 class PDFRelatorio(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 10)
-        self.set_text_color(50, 50, 50)
-        self.cell(0, 5, 'CALCJUS PRO - LAUDO TÉCNICO', 0, 1, 'R')
+        self.set_font('Arial', 'B', 12)
+        self.set_text_color(0, 0, 0)
+        self.cell(0, 5, 'RELATÓRIO DE CÁLCULO JUDICIAL', 0, 1, 'C')
+        self.ln(2)
         self.set_draw_color(0, 0, 0)
-        self.line(10, 15, 287, 15) 
-        self.ln(8)
+        self.line(10, 18, 287, 18) 
+        self.ln(10)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 7)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 5, f'Pagina {self.page_no()}/{{nb}} | Gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
+        self.cell(0, 5, f'Pagina {self.page_no()}/{{nb}} | Gerado via CalcJus Pro em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
 
     def safe_cell(self, w, h, txt, border=0, ln=0, align='', fill=False):
-        """Método seguro para imprimir texto convertendo para Latin-1 e evitando falhas."""
+        """Imprime texto garantindo compatibilidade Latin-1 (evita travar com caracteres estranhos)"""
         try:
-            # Tenta codificar e decodificar para garantir compatibilidade com latin-1
             txt_safe = str(txt).encode('latin-1', 'replace').decode('latin-1')
             self.cell(w, h, txt_safe, border, ln, align, fill)
         except:
-            # Fallback em caso extremo
-            self.cell(w, h, "Erro Char", border, ln, align, fill)
+            self.cell(w, h, "?", border, ln, align, fill)
+
+    def safe_multi_cell(self, w, h, txt, border=0, align='J', fill=False):
+        """MultiCell segura para textos longos"""
+        try:
+            txt_safe = str(txt).encode('latin-1', 'replace').decode('latin-1')
+            self.multi_cell(w, h, txt_safe, border, align, fill)
+        except:
+            self.multi_cell(w, h, "Erro de caractere no texto descritivo.", border, align, fill)
 
 def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, config):
     pdf = PDFRelatorio(orientation='L', unit='mm', format='A4')
     pdf.alias_nb_pages()
     pdf.add_page()
     
-    # Título
-    pdf.set_font("Arial", "B", 14)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.safe_cell(0, 10, "RELATÓRIO DE CÁLCULO JUDICIAL", 0, 1, "C", True)
-    pdf.ln(5)
-    
-    # 1. Metodologia
+    # --- 1. MEMORIAL DESCRITIVO DETALHADO ---
     pdf.set_font("Arial", "B", 10)
-    pdf.safe_cell(0, 7, " 1. PARÂMETROS E METODOLOGIA", 0, 1)
-    pdf.ln(1)
+    pdf.set_fill_color(240, 240, 240) # Cinza claro
+    pdf.safe_cell(0, 7, " 1. PARÂMETROS E METODOLOGIA (MEMORIAL DESCRITIVO)", 0, 1, 'L', True)
+    pdf.ln(2)
     
     dt_calc = config.get('data_calculo', date.today()).strftime('%d/%m/%Y')
-    texto_metodologia = (
-        f"DATA BASE: {dt_calc}\n"
-        f"REGIME: {config.get('regime_desc')}\n"
-        f"Este cálculo utiliza metodologia de juros simples pro-rata die (1% a.m.) e correção monetária "
-        f"conforme tabelas oficiais do Banco Central do Brasil."
-    )
+    
+    # Lógica para reconstruir o texto detalhado com as DATAS EXPLÍCITAS
+    texto_explicativo = f"DATA BASE DO CÁLCULO: {dt_calc}\n\n"
+    
+    tipo_regime = config.get('tipo_regime', 'Padrao')
+    indice_nome = config.get('indice_nome', 'Índice Oficial')
+    
+    if "Misto" in tipo_regime:
+        # Recupera as datas salvas para exibir no texto
+        dt_corte = config.get('data_corte').strftime("%d/%m/%Y") if config.get('data_corte') else "-"
+        dt_cit = config.get('data_citacao').strftime("%d/%m/%Y") if config.get('data_citacao') else "-"
+        
+        texto_explicativo += (
+            f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n"
+            f"O cálculo foi realizado em duas etapas distintas para atender à legislação vigente:\n"
+            f"1. FASE PRÉ-SELIC (Do vencimento até {dt_corte}): O valor original foi corrigido monetariamente pelo índice '{indice_nome}'. "
+            f"Sobre este valor corrigido, aplicaram-se Juros de Mora de 1% a.m. (simples e pro-rata die) contados a partir de {dt_cit} até a data de corte.\n"
+            f"2. FASE SELIC (De {dt_corte} até {dt_calc}): O montante total acumulado na Fase 1 foi consolidado e, a partir desta data ({dt_corte}), "
+            f"atualizado exclusivamente pela variação da Taxa SELIC, vedada a cumulação com outros índices."
+        )
+    elif "SELIC" in tipo_regime:
+        texto_explicativo += (
+            f"METODOLOGIA APLICADA (Taxa SELIC Pura - EC 113/21):\n"
+            f"O valor original foi atualizado exclusivamente pela Taxa SELIC acumulada desde a data do vencimento (ou evento danoso) até a data base atual ({dt_calc}). "
+            f"Conforme jurisprudência do STJ e a Emenda Constitucional 113/21, a Taxa SELIC engloba juros de mora e correção monetária em um único fator."
+        )
+    else: # Padrão
+        dt_cit = config.get('data_citacao').strftime("%d/%m/%Y") if config.get('data_citacao') else "-"
+        texto_explicativo += (
+            f"METODOLOGIA APLICADA (Padrão Cível):\n"
+            f"1. CORREÇÃO MONETÁRIA: O valor original foi atualizado pelo índice '{indice_nome}' desde a data do vencimento até a data base ({dt_calc}).\n"
+            f"2. JUROS DE MORA: Foram aplicados juros moratórios de 1% ao mês (juros simples), calculados de forma pro-rata die (proporcional aos dias), "
+            f"incidindo sobre o valor corrigido, contados a partir de {dt_cit}."
+        )
+
     pdf.set_font("Arial", "", 9)
-    pdf.multi_cell(0, 5, texto_metodologia.encode('latin-1', 'replace').decode('latin-1'))
+    pdf.safe_multi_cell(0, 5, texto_explicativo)
     pdf.ln(5)
 
-    # 2. Indenização
+    # --- 2. INDENIZAÇÃO (TABELA COM COLUNAS CORRETAS) ---
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
-        pdf.set_fill_color(220, 230, 255)
-        pdf.safe_cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS CÍVEIS", 0, 1, '', True)
+        pdf.set_fill_color(220, 230, 255) # Azul claro
+        pdf.safe_cell(0, 7, " 2. INDENIZAÇÃO / DÍVIDAS CÍVEIS", 0, 1, 'L', True)
         
+        # Colunas conforme solicitação: Venc | Valor Orig | Fator CM | V. Corr | Juros | Subtotal F1 | Fator SELIC | TOTAL
         headers = [("Vencimento", 22), ("Valor Orig.", 25), ("Fator CM", 20), 
                    ("V. Corrigido", 25), ("Juros Mora", 35), ("Subtotal F1", 25), 
                    ("Fator SELIC", 20), ("TOTAL", 30)]
@@ -203,7 +245,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
             ]
             widths = [h[1] for h in headers]
             for i, d in enumerate(dados):
-                align = 'L' if i == 4 else 'C' # Juros alinhado a esquerda pois tem texto
+                align = 'L' if i == 4 else 'C' # Juros alinhado a esquerda
                 pdf.safe_cell(widths[i], 6, d, 1, 0, align)
             pdf.ln()
         
@@ -211,14 +253,13 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 7, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # 3. Honorários
+    # --- 3. HONORÁRIOS ---
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
-        pdf.set_fill_color(220, 240, 220)
-        pdf.safe_cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, '', True)
+        pdf.set_fill_color(220, 240, 220) # Verde claro
+        pdf.safe_cell(0, 7, " 3. HONORÁRIOS DE SUCUMBÊNCIA", 0, 1, 'L', True)
         pdf.set_font("Arial", "B", 7)
         
-        # Cabeçalho Honorários
         cols_hon = [("Descrição", 60), ("Valor Orig.", 30), ("Fator/Índice", 40), ("Juros", 40), ("TOTAL", 40)]
         for txt, w in cols_hon: pdf.safe_cell(w, 6, txt, 1, 0, 'C')
         pdf.ln()
@@ -236,11 +277,11 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 7, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # 4. Pensão
+    # --- 4. PENSÃO ---
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
-        pdf.set_fill_color(255, 230, 230)
-        pdf.safe_cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", 0, 1, '', True)
+        pdf.set_fill_color(255, 230, 230) # Rosa claro
+        pdf.safe_cell(0, 7, " 4. PENSÃO ALIMENTÍCIA (DÉBITOS)", 0, 1, 'L', True)
         
         h_pen = [("Vencimento", 25), ("Devido", 25), ("Pago", 25), ("Saldo Base", 25), 
                  ("Fator CM", 20), ("Atualizado", 25), ("Juros", 25), ("TOTAL", 30)]
@@ -261,9 +302,33 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.safe_cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
-    # 5. Resumo Final
-    if totais['final'] > 0:
+    # --- 5. ALUGUEL ---
+    if dados_aluguel:
         pdf.ln(5)
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_fill_color(255, 255, 220) 
+        pdf.safe_cell(0, 7, " DEMONSTRATIVO DE REAJUSTE DE ALUGUEL", 0, 1, 'L', True)
+        da = dados_aluguel
+        pdf.set_font("Arial", "", 10)
+        pdf.ln(2)
+        pdf.safe_cell(50, 8, "Item", 1, 0, 'C')
+        pdf.safe_cell(100, 8, "Detalhe", 1, 1, 'C')
+        pdf.safe_cell(50, 8, "Valor Atual", 1, 0, 'L')
+        pdf.safe_cell(100, 8, f"{formatar_moeda(da['valor_antigo'])}", 1, 1, 'R')
+        pdf.safe_cell(50, 8, "Índice Aplicado", 1, 0, 'L')
+        
+        perc_txt = f"{(da['fator']-1)*100:.4f}%" if isinstance(da['fator'], (float, Decimal)) else str(da['fator'])
+        pdf.safe_cell(100, 8, f"{da['indice']} (Acumulado: {perc_txt})", 1, 1, 'R')
+        
+        pdf.safe_cell(50, 8, "Período", 1, 0, 'L')
+        pdf.safe_cell(100, 8, da['periodo'], 1, 1, 'R')
+        pdf.set_font("Arial", "B", 12)
+        pdf.safe_cell(50, 10, "NOVO ALUGUEL", 1, 0, 'L')
+        pdf.safe_cell(100, 10, f"{formatar_moeda(da['novo_valor'])}", 1, 1, 'R')
+
+    # --- 6. RESUMO FINAL ---
+    if totais['final'] > 0:
+        pdf.ln(8)
         pdf.set_font("Arial", "B", 11)
         pdf.safe_cell(100, 8, "RESUMO DA EXECUÇÃO", "B", 1, 'L')
         pdf.ln(2)
@@ -278,15 +343,17 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
             pdf.safe_cell(140, 8, "Honorários Execução Art. 523 (10%)", 0, 0)
             pdf.safe_cell(40, 8, formatar_moeda(totais['hon_exec']), 0, 1, 'R')
             
-        pdf.ln(2)
+        pdf.ln(4)
         pdf.set_font("Arial", "B", 14)
-        pdf.set_fill_color(220, 220, 220)
+        pdf.set_fill_color(220, 220, 220) # Cinza destaque
+        
+        # Borda em volta do total
         pdf.safe_cell(140, 12, "TOTAL GERAL DA DÍVIDA", 1, 0, 'L', True)
         pdf.safe_cell(40, 12, formatar_moeda(totais['final']), 1, 1, 'R', True)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- DADOS ESTÁTICOS ---
+# --- 6. DADOS ESTÁTICOS ---
 mapa_indices_completo = {
     "INPC (IBGE) - 188": 188, 
     "IGP-M (FGV) - 189": 189, 
@@ -330,7 +397,7 @@ with st.sidebar.expander("🛠️ Ferramentas Admin"):
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização/Cível", "⚖️ Honorários", "👶 Pensão Alimentícia", "🏠 Aluguel", "📊 Relatório PDF"])
 
 # ==============================================================================
-# ABA 1: INDENIZAÇÃO (LÓGICA BLINDADA)
+# ABA 1: INDENIZAÇÃO (LÓGICA BLINDADA COM DATAS NO REPORT)
 # ==============================================================================
 with tab1:
     st.subheader("Cálculo de Indenização Cível / Dívidas")
@@ -353,7 +420,10 @@ with tab1:
         horizontal=True
     )
     
-    indice_sel_ind, data_corte_selic, data_citacao_ind = None, None, None
+    # Variáveis locais para inputs
+    indice_sel_ind = None
+    data_corte_selic = None
+    data_citacao_ind = None
     cod_ind_escolhido = None
     
     # Configuração Dinâmica dos Inputs Baseado no Regime
@@ -362,7 +432,7 @@ with tab1:
         indice_sel_ind = c_r1.selectbox("Índice de Correção:", list(mapa_indices_completo.keys()))
         data_citacao_ind = c_r2.date_input("Data Citação (Início Juros)", value=inicio_atraso, format="DD/MM/YYYY")
         cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
-        st.session_state.regime_desc = f"{indice_sel_ind} + Juros 1% a.m."
+        desc_regime_txt = f"{indice_sel_ind} + Juros 1% a.m."
         
     elif "3. Misto" in regime_tipo:
         st.info("Regime Misto: Corrige pelo índice até a Data de Corte (ex: promulgação da EC 113), e aplica SELIC depois.")
@@ -371,15 +441,26 @@ with tab1:
         data_citacao_ind = c_mix2.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
         data_corte_selic = c_mix3.date_input("Data Início SELIC", value=date(2021, 12, 9), format="DD/MM/YYYY")
         cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
-        st.session_state.regime_desc = f"Misto ({indice_sel_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
+        desc_regime_txt = f"Misto ({indice_sel_ind} -> SELIC em {data_corte_selic.strftime('%d/%m/%Y')})"
     else:
-        st.session_state.regime_desc = "Taxa SELIC (Correção + Juros)"
+        desc_regime_txt = "Taxa SELIC (Correção + Juros)"
+        indice_sel_ind = "SELIC" # Placeholder
 
     if st.button("Calcular Indenização", type="primary"):
+        # 1. SALVAR PARÂMETROS PARA O PDF (Estado Global)
+        st.session_state.params_relatorio = {
+            'regime_desc': desc_regime_txt,
+            'tipo_regime': regime_tipo,
+            'indice_nome': indice_sel_ind,
+            'data_corte': data_corte_selic,
+            'data_citacao': data_citacao_ind,
+            'data_calculo': data_calculo
+        }
+
         lista_resultados = []
         
         with st.status("Processando dados e conectando ao BCB...", expanded=True) as status:
-            # 1. Geração das datas de vencimento
+            # Geração das datas de vencimento
             datas_vencimento = []
             if inicio_atraso == fim_atraso:
                 datas_vencimento = [inicio_atraso]
@@ -387,19 +468,16 @@ with tab1:
                 curr = inicio_atraso
                 while curr <= fim_atraso:
                     datas_vencimento.append(curr)
-                    # Avança um mês preservando dia (simplificado para mês civil)
                     prox_mes = curr.replace(day=1) + relativedelta(months=1)
                     dia_orig = inicio_atraso.day
                     try:
                         curr = prox_mes.replace(day=dia_orig)
                     except ValueError:
-                        # Se dia original não existe no prox mês (ex: 31 em abril), pega último dia
                         curr = prox_mes + relativedelta(day=31)
                     if curr > fim_atraso: break
 
-            # 2. Loop de Cálculo (Usando Decimal)
+            # Loop de Cálculo (Usando Decimal)
             for venc in datas_vencimento:
-                # Variáveis de auditoria
                 linha = {
                     "Vencimento": venc.strftime("%d/%m/%Y"),
                     "Valor Orig.": formatar_moeda(val_mensal),
@@ -421,12 +499,10 @@ with tab1:
                     linha["Audit Fator CM"] = formatar_decimal_str(fator)
                     linha["V. Corrigido Puro"] = formatar_moeda(v_corrigido)
                     
-                    # Juros Pro-Rata
                     dt_inicio_juros = data_citacao_ind if venc < data_citacao_ind else venc
                     dias_atraso = (data_calculo - dt_inicio_juros).days
                     
                     if dias_atraso > 0:
-                        # (1% / 30) * dias * valor_corrigido
                         fator_juros = (Decimal('0.01') / Decimal('30')) * Decimal(dias_atraso)
                         valor_juros = v_corrigido * fator_juros
                         linha["Audit Juros %"] = f"{(dias_atraso/30):.1f}% ({dias_atraso}d)"
@@ -435,7 +511,7 @@ with tab1:
                         linha["Audit Juros %"] = "0%"
 
                     total_final = v_corrigido + valor_juros
-                    linha["Total Fase 1"] = formatar_moeda(total_final) # Fase 1 é o total aqui
+                    linha["Total Fase 1"] = formatar_moeda(total_final)
 
                 # REGIME 2: SELIC PURA
                 elif "2. Taxa SELIC" in regime_tipo:
@@ -682,18 +758,19 @@ with tab5:
     if aplicar_multa_523: col_detalhes.write(f"+ Multa 10%: {formatar_moeda(val_multa_523)}")
     if aplicar_hon_523: col_detalhes.write(f"+ Hon. Execução 10%: {formatar_moeda(val_hon_523)}")
     
-    # Preparar dicts para PDF
+    # Prepara o PDF usando os dados salvos na sessão (garante que as datas venham da aba 1)
     totais_pdf = {
         'indenizacao': t1, 'honorarios': t2, 'pensao': t3,
         'multa': val_multa_523, 'hon_exec': val_hon_523, 'final': total_geral
     }
     
-    config_pdf = {
+    # Recupera parâmetros salvos (para não perder se o usuário trocou de aba)
+    config_pdf = st.session_state.params_relatorio.copy()
+    config_pdf.update({
         'multa_523': aplicar_multa_523,
         'hon_523': aplicar_hon_523,
-        'data_calculo': data_calculo,
-        'regime_desc': st.session_state.regime_desc
-    }
+        # data_calculo pode vir da sidebar, mas por segurança mantemos a do cálculo
+    })
     
     if st.button("📄 Baixar Laudo Técnico (PDF)"):
         if total_geral == 0 and st.session_state.dados_aluguel is None:
