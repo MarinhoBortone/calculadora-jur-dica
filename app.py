@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import calendar
+import csv  # <--- NOVO: Import necessário para ler a tabela
 from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
@@ -13,7 +14,7 @@ from urllib3.util.retry import Retry
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
-st.set_page_config(page_title="CalcJus Pro 4.5 (Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.6 (TJSP Integrado)", layout="wide", page_icon="⚖️")
 
 st.markdown("""
 <style>
@@ -24,8 +25,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.5 - Sistema Integrado")
-st.markdown("Cálculos Judiciais com Precisão Decimal e Relatórios Detalhados.")
+st.title("⚖️ CalcJus PRO 4.6 - Com Tabela TJSP")
+st.markdown("Cálculos Judiciais com Precisão Decimal, API BCB e Tabela Prática.")
 
 # --- 2. ESTADO DA SESSÃO ---
 state_vars = {
@@ -52,6 +53,44 @@ for var, default in state_vars.items():
     if var not in st.session_state:
         st.session_state[var] = default
 
+# --- NOVO: CLASSE PARA LER O CSV DO TJSP ---
+class CalculadoraTJSP:
+    def __init__(self, arquivo_csv='tabela_tjsp.csv'):
+        self.indices = {}
+        self.carregar_dados(arquivo_csv)
+
+    def carregar_dados(self, arquivo_csv):
+        try:
+            with open(arquivo_csv, mode='r', encoding='utf-8') as file:
+                leitor = csv.DictReader(file)
+                for linha in leitor:
+                    if linha['fator']:
+                        self.indices[linha['mes_ano']] = float(linha['fator'])
+        except FileNotFoundError:
+            # Não vamos travar o app se o arquivo não existir, apenas avisar no log
+            print(f"AVISO: Arquivo {arquivo_csv} não encontrado. A função TJSP não funcionará.")
+        except Exception as e:
+            print(f"Erro CSV: {e}")
+
+    def obter_fator(self, data_obj):
+        # Recebe objeto date e formata para chave MM/YYYY
+        chave = f"{data_obj.month:02d}/{data_obj.year}"
+        return self.indices.get(chave)
+
+    def calcular_fator_composto(self, data_venc, data_atualiz):
+        # Retorna o fator multiplicador direto (Indice Final / Indice Inicial)
+        idx_base = self.obter_fator(data_venc)
+        idx_final = self.obter_fator(data_atualiz)
+        
+        if not idx_base or not idx_final:
+            return None
+        
+        # Matemática da Tabela Prática: Valor * (Fator Data Atual / Fator Data Antiga)
+        return Decimal(str(idx_final)) / Decimal(str(idx_base))
+
+# Instancia a calculadora TJSP globalmente
+calc_tjsp = CalculadoraTJSP()
+
 # --- 3. FUNÇÕES UTILITÁRIAS ---
 
 def to_decimal(valor):
@@ -62,11 +101,9 @@ def to_decimal(valor):
             return Decimal(str(valor))
         if isinstance(valor, str):
             valor = valor.strip()
-            # Se tem vírgula, é formato BR (milhar com ponto ou sem, decimal com virgula)
             if ',' in valor:
                 valor = valor.replace('.', '').replace(',', '.')
-            # Se só tem ponto, assume que é separador decimal (segurança)
-        return Decimal(str(valor))
+            return Decimal(str(valor))
     except:
         return Decimal('0.00')
 
@@ -89,8 +126,11 @@ def formatar_decimal_str(valor):
 def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
     """Baixa a série inteira e retorna um DataFrame pronto para cálculo."""
     if st.session_state.simular_erro_bcb: return None
+    # Se for código -1 (TJSP), não busca no BCB
+    if codigo_serie == -1: return pd.DataFrame()
+
     if data_fim <= data_inicio or data_inicio > date.today():
-        return pd.DataFrame() # Retorna vazio se datas inválidas
+        return pd.DataFrame()
 
     d1 = data_inicio.strftime("%d/%m/%Y")
     d2 = data_fim.strftime("%d/%m/%Y")
@@ -107,12 +147,9 @@ def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
             dados = response.json()
             if not dados: return pd.DataFrame()
             
-            # Processamento em lote (muito mais rápido)
             df = pd.DataFrame(dados)
-            # Converte data string para objeto date
             df['data_dt'] = pd.to_datetime(df['data'], format='%d/%m/%Y').dt.date
             
-            # Prepara o fator multiplicativo decimal: 0.5% vira 1.005
             def converter_fator(x):
                 val_str = x.replace(',', '.') if isinstance(x, str) else str(x)
                 return Decimal('1') + (Decimal(val_str) / Decimal('100'))
@@ -127,7 +164,6 @@ def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
     """Calcula o produto acumulado filtrando o DataFrame localmente."""
     if df_serie is None or df_serie.empty: return None
     
-    # Filtra período: Data da série >= Vencimento E Data da série <= Data Cálculo
     mask = (df_serie['data_dt'] >= dt_ini) & (df_serie['data_dt'] <= dt_fim)
     subset = df_serie.loc[mask]
     
@@ -138,8 +174,11 @@ def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
         fator *= val
     return fator
 
-# Wrapper para manter compatibilidade com Tab 2, 4 e chamadas isoladas
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
+    # Wrapper modificado para aceitar TJSP
+    if codigo_serie == -1: # Código interno para TJSP
+        return calc_tjsp.calcular_fator_composto(data_inicio, data_fim)
+        
     df = obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim)
     if df is None or df.empty: return None
     return calcular_fator_memoria(df, data_inicio, data_fim)
@@ -213,7 +252,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_fill_color(220, 230, 255)
         pdf.safe_cell(0, 7, " 2. DEMONSTRATIVO DE CÁLCULO - INDENIZAÇÃO", 0, 1, 'L', True)
         
-        # --- LARGURAS CORRIGIDAS ---
+        # --- LARGURAS ---
         if "Misto" in tipo_regime:
             headers = [
                 ("Vencimento", 25), 
@@ -221,8 +260,8 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
                 ("Fator CM", 22), 
                 ("V. Corrigido", 28), 
                 ("Juros F1", 25),
-                ("Subtotal F1", 30),   
-                ("Fator SELIC", 45),   
+                ("Subtotal F1", 30),    
+                ("Fator SELIC", 45),    
                 ("TOTAL", 35)
             ]
             campos = ['Vencimento', 'Valor Orig.', 'Audit Fator CM', 'V. Corrigido Puro', 
@@ -251,7 +290,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
             widths = [h[1] for h in headers]
             for i, campo in enumerate(campos):
                 valor = str(row.get(campo, '-'))
-                # Ajuste de fonte se texto for muito longo
                 if len(valor) > 25: pdf.set_font("Arial", "", 7)
                 else: pdf.set_font("Arial", "", 8)
                 pdf.safe_cell(widths[i], 6, valor, 1, 0, 'C') 
@@ -261,7 +299,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # --- DEMAIS SEÇÕES ---
+    # --- HONORÁRIOS ---
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
@@ -281,6 +319,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Honorários: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
+    # --- PENSÃO ---
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
@@ -301,6 +340,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.safe_cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
+    # --- ALUGUEL ---
     if dados_aluguel:
         pdf.ln(5)
         pdf.set_font("Arial", "B", 10)
@@ -343,6 +383,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
 
 # --- 6. DADOS ESTÁTICOS ---
 mapa_indices_completo = {
+    "Tabela Prática TJSP (Oficial)": -1, # <--- CÓDIGO ESPECIAL -1 PARA O SISTEMA SABER QUE É CSV
     "INPC (IBGE) - 188": 188, 
     "IGP-M (FGV) - 189": 189, 
     "IPCA (IBGE) - 433": 433,
@@ -433,7 +474,7 @@ with tab1:
         }
 
         lista_resultados = []
-        with st.status("Processando dados e conectando ao BCB (Modo Otimizado)...", expanded=True) as status:
+        with st.status("Processando dados...", expanded=True) as status:
             datas_vencimento = []
             if inicio_atraso == fim_atraso:
                 datas_vencimento = [inicio_atraso]
@@ -453,9 +494,12 @@ with tab1:
             dt_minima_api = min(datas_vencimento)
             
             df_indice_principal = pd.DataFrame()
-            if cod_ind_escolhido:
+            # Se for TJSP (-1), não baixa nada do BCB para o índice principal
+            if cod_ind_escolhido and cod_ind_escolhido != -1:
                 status.write(f"Baixando série histórica {indice_sel_ind}...")
                 df_indice_principal = obter_dados_bcb_cache(cod_ind_escolhido, dt_minima_api, data_calculo)
+            elif cod_ind_escolhido == -1:
+                status.write("Acessando Tabela Prática TJSP...")
             
             df_selic_cache = pd.DataFrame()
             if "SELIC" in regime_tipo or "Misto" in regime_tipo:
@@ -477,9 +521,13 @@ with tab1:
 
                 total_final = Decimal('0.00')
 
-                # REGIME 1: PADRÃO
+                # REGIME 1: PADRÃO (TJSP ou BCB)
                 if "1. Índice" in regime_tipo:
-                    fator = calcular_fator_memoria(df_indice_principal, venc, data_calculo)
+                    if cod_ind_escolhido == -1: # TJSP
+                         fator = calc_tjsp.calcular_fator_composto(venc, data_calculo)
+                    else: # BCB API
+                         fator = calcular_fator_memoria(df_indice_principal, venc, data_calculo)
+                    
                     if fator:
                         v_corrigido = val_mensal * fator
                         linha["Audit Fator CM"] = formatar_decimal_str(fator)
@@ -515,7 +563,11 @@ with tab1:
                             linha["Audit Juros %"] = "-"
                     else:
                         # Fase 1: Correção
-                        f_fase1 = calcular_fator_memoria(df_indice_principal, venc, data_corte_selic)
+                        if cod_ind_escolhido == -1: # TJSP
+                             f_fase1 = calc_tjsp.calcular_fator_composto(venc, data_corte_selic)
+                        else: # BCB API
+                             f_fase1 = calcular_fator_memoria(df_indice_principal, venc, data_corte_selic)
+
                         if f_fase1:
                             v_corr_f1 = val_mensal * f_fase1
                             linha["Audit Fator CM"] = f"{f_fase1:.6f}"
