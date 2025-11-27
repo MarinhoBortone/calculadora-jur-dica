@@ -1,0 +1,64 @@
+from datetime import datetime
+
+class CorrecaoTJSP:
+    def __init__(self):
+        # Em produção, isso viria de um Banco de Dados ou CSV.
+        # Aqui, copiei os índices exatos da sua imagem para bater o cálculo.
+        self.tabela_indices = {
+            '01/2024': 93.168579,
+            '02/2024': 93.699639,
+            '03/2024': 94.458606,
+            '04/2024': 94.638077,
+            '05/2024': 94.988237,
+            '06/2024': 95.425182,
+            '07/2024': 95.663744,
+            '08/2024': 95.912469,
+            '09/2024': 96.094702,
+            # ... outros meses ...
+            '11/2024': 96.739210  # Índice utilizado como Data Base Final na imagem
+        }
+
+    def obter_indice(self, data_str):
+        """Recebe data 'DD/MM/AAAA' e retorna o índice do mês/ano correspondente"""
+        try:
+            dt = datetime.strptime(data_str, "%d/%m/%Y")
+            chave = f"{dt.month:02d}/{dt.year}"
+            return self.tabela_indices.get(chave)
+        except ValueError:
+            return None
+
+    def calcular_atualizacao(self, valor_original, data_vencimento, data_atualizacao):
+        indice_base = self.obter_indice(data_vencimento)
+        indice_final = self.obter_indice(data_atualizacao)
+
+        if not indice_base or not indice_final:
+            return "Índice não encontrado para o período."
+
+        # FÓRMULA: Valor * (Índice Final / Índice Base)
+        fator = indice_final / indice_base
+        valor_corrigido = valor_original * fator
+        
+        return {
+            "valor_original": valor_original,
+            "indice_base": indice_base,
+            "indice_final": indice_final,
+            "fator": fator,
+            "valor_corrigido": valor_corrigido
+        }
+
+# --- TESTANDO COM O PRIMEIRO CASO DA SUA IMAGEM ---
+# Jan/24: R$ 566,67
+calc = CorrecaoTJSP()
+
+resultado = calc.calcular_atualizacao(
+    valor_original=566.67, 
+    data_vencimento="21/01/2024", 
+    data_atualizacao="01/11/2024" # Usando Nov/24 como base final conforme imagem
+)
+
+print(f"--- Resultado Jan/24 ---")
+print(f"Valor Original: R$ {resultado['valor_original']:,.2f}")
+print(f"Índice Jan/24: {resultado['indice_base']:.6f}")
+print(f"Índice Nov/24: {resultado['indice_final']:.6f}")
+print(f"Valor Corrigido: R$ {resultado['valor_corrigido']:,.2f}") 
+# O resultado deve ser muito próximo de R$ 588,39
