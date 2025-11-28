@@ -10,11 +10,13 @@ from decimal import Decimal, ROUND_HALF_UP, getcontext
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# --- 1. CONFIGURAÇÃO FINANCEIRA E GLOBAL ---
+# ==============================================================================
+# 1. CONFIGURAÇÃO FINANCEIRA E GLOBAL
+# ==============================================================================
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
-st.set_page_config(page_title="CalcJus Pro 4.8 (Full)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.9 (Final)", layout="wide", page_icon="⚖️")
 
 st.markdown("""
 <style>
@@ -25,10 +27,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.8 - Sistema Completo")
-st.markdown("Cálculo Pro Rata Die (Dias Exatos), Tabela TJSP (CSV) e API BCB.")
+st.title("⚖️ CalcJus PRO 4.9 - Sistema Completo")
+st.markdown("Cálculo Pro Rata Die (Dias Exatos), Tabela TJSP (CSV) e API BCB Integrados.")
 
-# --- 2. ESTADO DA SESSÃO ---
+# ==============================================================================
+# 2. ESTADO DA SESSÃO (Variáveis Globais)
+# ==============================================================================
 state_vars = {
     'simular_erro_bcb': False,
     'total_indenizacao': Decimal('0.00'),
@@ -53,6 +57,10 @@ for var, default in state_vars.items():
     if var not in st.session_state:
         st.session_state[var] = default
 
+# ==============================================================================
+# 3. CLASSES E FUNÇÕES DE CÁLCULO
+# ==============================================================================
+
 # --- CLASSE PARA LER O CSV DO TJSP ---
 class CalculadoraTJSP:
     def __init__(self, arquivo_csv='tabela_tjsp.csv'):
@@ -67,6 +75,7 @@ class CalculadoraTJSP:
                     if linha['fator']:
                         self.indices[linha['mes_ano']] = float(linha['fator'])
         except FileNotFoundError:
+            # Apenas avisa no console, não trava o app
             print(f"AVISO: Arquivo {arquivo_csv} não encontrado.")
         except Exception as e:
             print(f"Erro CSV: {e}")
@@ -79,12 +88,13 @@ class CalculadoraTJSP:
         idx_base = self.obter_fator(data_venc)
         idx_final = self.obter_fator(data_atualiz)
         if not idx_base or not idx_final: return None
+        # Fórmula Tabela Prática: Fator Final / Fator Inicial
         return Decimal(str(idx_final)) / Decimal(str(idx_base))
 
+# Instância Global da Calculadora TJSP
 calc_tjsp = CalculadoraTJSP()
 
-# --- 3. FUNÇÕES UTILITÁRIAS ---
-
+# --- FUNÇÕES UTILITÁRIAS ---
 def to_decimal(valor):
     if not valor: return Decimal('0.00')
     try:
@@ -110,12 +120,11 @@ def formatar_moeda(valor):
 def formatar_decimal_str(valor):
     return f"{valor:.6f}"
 
-# --- 4. CONEXÃO BCB OTIMIZADA ---
-
+# --- CONEXÃO BCB OTIMIZADA ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
     if st.session_state.simular_erro_bcb: return None
-    if codigo_serie == -1: return pd.DataFrame() # TJSP
+    if codigo_serie == -1: return pd.DataFrame() # Código -1 é TJSP (CSV Local)
 
     if data_fim <= data_inicio or data_inicio > date.today():
         return pd.DataFrame()
@@ -155,13 +164,13 @@ def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
     return fator
 
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
-    # Wrapper inteligente: Se for -1, usa CSV Local. Se não, usa API.
+    # Se for TJSP (-1), usa a classe local. Se for BCB, usa API.
     if codigo_serie == -1: return calc_tjsp.calcular_fator_composto(data_inicio, data_fim)
     df = obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim)
     if df is None or df.empty: return None
     return calcular_fator_memoria(df, data_inicio, data_fim)
 
-# --- 5. GERAÇÃO DE PDF ---
+# --- GERAÇÃO DE PDF ---
 class PDFRelatorio(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
@@ -197,7 +206,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.alias_nb_pages()
     pdf.add_page()
     
-    # --- MEMORIAL ---
+    # MEMORIAL
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.safe_cell(0, 7, " 1. MEMORIAL DESCRITIVO", 0, 1, 'L', True)
@@ -219,7 +228,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     pdf.safe_multi_cell(0, 5, texto_explicativo)
     pdf.ln(5)
 
-    # --- INDENIZAÇÃO ---
+    # INDENIZAÇÃO
     if not dados_ind.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 230, 255)
@@ -251,7 +260,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # --- HONORÁRIOS E OUTROS ---
+    # DEMAIS SEÇÕES (HONORÁRIOS, PENSÃO, ALUGUEL)
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(220, 240, 220)
@@ -271,7 +280,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal: {formatar_moeda(totais['honorarios'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # --- PENSÃO ---
     if not dados_pen.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(255, 230, 230)
@@ -292,7 +300,6 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.set_font("Arial", "B", 9)
         pdf.safe_cell(0, 7, f"Subtotal Pensão: {formatar_moeda(totais['pensao'])}", 0, 1, 'R')
 
-    # --- ALUGUEL ---
     if dados_aluguel:
         pdf.ln(5)
         pdf.set_font("Arial", "B", 10)
@@ -308,7 +315,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(30, 10, "NOVO:", 0, 0, 'R')
         pdf.safe_cell(50, 10, f"{formatar_moeda(da['novo_valor'])}", 0, 1, 'L')
 
-    # --- RESUMO FINAL ---
+    # RESUMO FINAL
     if totais['final'] > 0:
         pdf.ln(8)
         pdf.set_font("Arial", "B", 11)
@@ -333,7 +340,9 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- 6. DADOS ESTÁTICOS ---
+# ==============================================================================
+# 4. DADOS ESTÁTICOS
+# ==============================================================================
 mapa_indices_completo = {
     "Tabela Prática TJSP (Oficial)": -1,
     "INPC (IBGE) - 188": 188, 
@@ -346,8 +355,9 @@ mapa_indices_completo = {
     "SELIC (Taxa Referencial) - 4390": 4390 
 }
 COD_SELIC = 4390
+
 # ==============================================================================
-# INTERFACE SIDEBAR
+# 5. INTERFACE (SIDEBAR E ABAS)
 # ==============================================================================
 st.sidebar.header("Parâmetros do Processo")
 data_calculo = st.sidebar.date_input("Data do Cálculo (Data Base)", value=date.today(), format="DD/MM/YYYY")
@@ -363,26 +373,34 @@ with st.sidebar.expander("🛠️ Admin"):
         st.cache_data.clear()
         st.rerun()
 
-# ==============================================================================
-# NAVEGAÇÃO
-# ==============================================================================
+# --- NAVEGAÇÃO ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização (Cível)", "⚖️ Honorários", "👶 Pensão", "🏠 Aluguel", "📊 PDF"])
 
+# ABA 1: INDENIZAÇÃO
 with tab1:
     st.subheader("Cálculo de Indenização (Pro Rata Die)")
     
     col_i1, col_i2, col_i3 = st.columns(3)
-    valor_contrato = to_decimal(col_i1.number_input("Valor Base (R$)", value=1000.00, step=100.00))
+    valor_contrato = to_decimal(col_i1.number_input("Valor Base (R$)", value=1700.00, step=100.00))
     perc_indenizacao = to_decimal(col_i2.number_input("Percentual (%)", value=100.0, step=10.0))
     val_mensal = valor_contrato * (perc_indenizacao / Decimal('100'))
     col_i3.metric("Valor da Parcela", formatar_moeda(val_mensal))
     st.write("---")
     
     c4, c5 = st.columns(2)
-    inicio_atraso = c4.date_input("Início da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
-    fim_atraso = c5.date_input("Fim da Mora", value=date(2021, 7, 10), format="DD/MM/YYYY")
+    inicio_atraso = c4.date_input("Início da Mora", value=date(2024, 1, 21), format="DD/MM/YYYY")
+    fim_atraso = c5.date_input("Fim da Mora", value=date(2024, 9, 26), format="DD/MM/YYYY")
     
-    regime_tipo = st.radio("Regime:", ["1. Índice + Juros 1% (Pro Rata)", "2. SELIC (EC 113/21)", "3. Misto"], horizontal=True)
+    # --- NOVO: SELETOR DE TERMO INICIAL DOS JUROS ---
+    st.markdown("##### Configuração de Juros")
+    tipo_termo_juros = st.radio(
+        "Cobrar Juros a partir de:",
+        ["Do Vencimento (Mora Ex Re)", "Da Citação (Mora Ex Personam)"],
+        horizontal=True
+    )
+    # -----------------------------------------------
+
+    regime_tipo = st.radio("Regime de Atualização:", ["1. Índice + Juros 1% (Pro Rata)", "2. SELIC (EC 113/21)", "3. Misto"], horizontal=True)
     
     indice_sel_ind = None
     data_corte_selic = None
@@ -392,14 +410,28 @@ with tab1:
     if "1. Índice" in regime_tipo:
         c_r1, c_r2 = st.columns(2)
         indice_sel_ind = c_r1.selectbox("Índice Correção:", list(mapa_indices_completo.keys()))
-        data_citacao_ind = c_r2.date_input("Data Citação (Juros)", value=inicio_atraso)
+        
+        # Se for pelo vencimento, a data da citação fica opcional
+        if "Citação" in tipo_termo_juros:
+            data_citacao_ind = c_r2.date_input("Data Citação", value=date.today())
+        else:
+            data_citacao_ind = None
+            c_r2.info("Juros contados desde cada vencimento.")
+            
         cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
         desc_regime_txt = f"{indice_sel_ind} + Juros 1% (Pro Rata)"
+
     elif "3. Misto" in regime_tipo:
         c_mix1, c_mix2, c_mix3 = st.columns(3)
         indice_sel_ind = c_mix1.selectbox("Índice Fase 1:", list(mapa_indices_completo.keys()))
-        data_citacao_ind = c_mix2.date_input("Data Citação", value=inicio_atraso)
-        data_corte_selic = c_mix3.date_input("Início SELIC", value=date(2021, 12, 9))
+        
+        if "Citação" in tipo_termo_juros:
+            data_citacao_ind = c_mix2.date_input("Data Citação", value=date(2024, 11, 11))
+        else:
+            data_citacao_ind = None
+            c_mix2.info("Juros desde vencimento.")
+
+        data_corte_selic = c_mix3.date_input("Início SELIC", value=date(2024, 11, 11))
         cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
         desc_regime_txt = f"Misto ({indice_sel_ind} -> SELIC)"
     else:
@@ -427,7 +459,6 @@ with tab1:
                     except: curr = prox_mes + relativedelta(day=31)
                     if curr > fim_atraso: break
             
-            # Downloads de Dados (BCB ou TJSP)
             dt_min = min(datas_vencimento)
             df_ind = pd.DataFrame()
             if cod_ind_escolhido and cod_ind_escolhido != -1:
@@ -452,6 +483,16 @@ with tab1:
                 }
                 total_final = Decimal('0.00')
 
+                # --- LÓGICA DE TERMO INICIAL DOS JUROS ---
+                if "Vencimento" in tipo_termo_juros:
+                    dt_inicio_juros_efetiva = venc
+                else:
+                    if data_citacao_ind:
+                        dt_inicio_juros_efetiva = data_citacao_ind if venc < data_citacao_ind else venc
+                    else:
+                        dt_inicio_juros_efetiva = venc
+                # ----------------------------------------
+
                 # REGIME 1: Pro Rata (Lógica Principal)
                 if "1. Índice" in regime_tipo:
                     if cod_ind_escolhido == -1: fator = calc_tjsp.calcular_fator_composto(venc, data_calculo)
@@ -462,8 +503,7 @@ with tab1:
                         linha["Audit Fator CM"] = formatar_decimal_str(fator)
                         linha["V. Corrigido Puro"] = formatar_moeda(v_corr)
                         
-                        dt_jur = data_citacao_ind if venc < data_citacao_ind else venc
-                        dias_atraso = (data_calculo - dt_jur).days
+                        dias_atraso = (data_calculo - dt_inicio_juros_efetiva).days
                         
                         val_jur = Decimal('0.00')
                         if dias_atraso > 0:
@@ -472,7 +512,6 @@ with tab1:
                             perc_total = taxa_dia * Decimal(dias_atraso)
                             val_jur = v_corr * perc_total
                             
-                            # Exibição Detalhada na Tabela
                             perc_fmt = perc_total * 100
                             linha["Audit Juros %"] = f"{perc_fmt:.4f}% ({dias_atraso}d)"
                             linha["Valor Juros"] = formatar_moeda(val_jur)
@@ -500,14 +539,14 @@ with tab1:
                             linha["Audit Fator CM"] = f"{f1:.6f}"
                             linha["V. Corrigido Puro"] = formatar_moeda(vc1)
                             
-                            dt_j = data_citacao_ind if venc < data_citacao_ind else venc
-                            if dt_j < data_corte_selic:
-                                dias = (data_corte_selic - dt_j).days
-                                # Pro Rata na Fase 1
+                            dt_limite_juros = data_corte_selic
+                            if dt_inicio_juros_efetiva < dt_limite_juros:
+                                dias = (dt_limite_juros - dt_inicio_juros_efetiva).days
                                 taxa = (Decimal('0.01')/Decimal('30')) * Decimal(dias)
                                 j1 = vc1 * taxa
                                 linha["Audit Juros %"] = f"{(taxa*100):.4f}% ({dias}d)"
-                            else: j1 = Decimal('0.00')
+                            else: 
+                                j1 = Decimal('0.00')
                             
                             sub_f1 = vc1 + j1
                             linha["Subtotal F1"] = formatar_moeda(sub_f1)
@@ -531,6 +570,7 @@ with tab1:
         st.success(f"Total: {formatar_moeda(st.session_state.total_indenizacao)}")
         st.dataframe(df.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
+# ABA 2: HONORÁRIOS
 with tab2:
     st.subheader("Honorários")
     c_h1, c_h2 = st.columns(2)
@@ -552,6 +592,7 @@ with tab2:
             st.session_state.total_honorarios = total
             st.dataframe(st.session_state.df_honorarios.drop(columns=["_num"]), hide_index=True)
 
+# ABA 3: PENSÃO
 with tab3:
     st.subheader("Pensão Alimentícia")
     c_p1, c_p2, c_p3 = st.columns(3)
@@ -595,6 +636,7 @@ with tab3:
         st.success(f"Total: {formatar_moeda(st.session_state.total_pensao)}")
         if not df_fin.empty: st.dataframe(df_fin.drop(columns=["_num"]), use_container_width=True, hide_index=True)
 
+# ABA 4: ALUGUEL
 with tab4:
     st.subheader("Aluguel")
     ca1, ca2 = st.columns(2)
@@ -609,6 +651,7 @@ with tab4:
             st.session_state.dados_aluguel = {'valor_antigo': alug_atual, 'novo_valor': novo_val, 'indice': idx_a, 'periodo': f"{dt_ini.strftime('%d/%m/%Y')} a {dt_reaj.strftime('%d/%m/%Y')}", 'fator': fator}
             st.metric("Novo Aluguel", formatar_moeda(novo_val))
 
+# ABA 5: FECHAMENTO
 with tab5:
     st.header("Fechamento Geral")
     sub = st.session_state.total_indenizacao + st.session_state.total_honorarios + st.session_state.total_pensao
