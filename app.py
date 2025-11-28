@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
-st.set_page_config(page_title="CalcJus Pro 4.8 (Pro-Rata)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.9 (Controle Juros Misto)", layout="wide", page_icon="⚖️")
 
 st.markdown("""
 <style>
@@ -72,7 +72,8 @@ state_vars = {
         'indice_nome': 'Índice',
         'data_corte': None,
         'data_citacao': None,
-        'data_calculo': date.today()
+        'data_calculo': date.today(),
+        'juros_fase1': True
     }
 }
 
@@ -256,7 +257,8 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
     
     if "Misto" in tipo_regime:
         dt_corte = config.get('data_corte').strftime("%d/%m/%Y") if config.get('data_corte') else "-"
-        texto_explicativo += (f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n1. FASE PRÉ-SELIC (Até {dt_corte}): Correção monetária pelo índice original + Juros de Mora de 1% a.m.\n2. FASE SELIC (De {dt_corte} até {dt_calc}): A Taxa SELIC incidiu exclusivamente sobre o PRINCIPAL CORRIGIDO. Os juros de mora acumulados na Fase 1 foram somados ao final.")
+        com_juros_txt = " + Juros de Mora de 1% a.m." if config.get('juros_fase1', True) else " (Sem Juros)"
+        texto_explicativo += (f"METODOLOGIA APLICADA (Regime Misto - EC 113/21):\n1. FASE PRÉ-SELIC (Até {dt_corte}): Correção monetária pelo índice original{com_juros_txt}.\n2. FASE SELIC (De {dt_corte} até {dt_calc}): A Taxa SELIC incidiu exclusivamente sobre o PRINCIPAL CORRIGIDO. Os juros de mora acumulados na Fase 1 foram somados ao final.")
     elif "SELIC" in tipo_regime:
         texto_explicativo += "METODOLOGIA APLICADA: Taxa SELIC Pura (Correção + Juros em fator único), conforme EC 113/21."
     else:
@@ -298,7 +300,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
         pdf.safe_cell(0, 8, f"Subtotal Indenização: {formatar_moeda(totais['indenizacao'])}", 0, 1, 'R')
         pdf.ln(3)
 
-    # (DEMAIS PARTES DO PDF SIMPLIFICADAS AQUI - JÁ ESTAVAM FUNCIONANDO)
+    # (DEMAIS PARTES DO PDF)
     if not dados_hon.empty:
         pdf.set_font("Arial", "B", 10)
         pdf.safe_cell(0, 7, " 3. HONORÁRIOS E DEMAIS", 0, 1, 'L', True)
@@ -330,7 +332,7 @@ COD_SELIC = 4390
 # ==============================================================================
 # NAVEGAÇÃO
 # ==============================================================================
-st.title("⚖️ CalcJus PRO 4.8 - Com Tabela TJSP")
+st.title("⚖️ CalcJus PRO 4.9 - Com Tabela TJSP")
 st.markdown("Cálculos Judiciais com Precisão Decimal, API BCB e Tabela Prática.")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização (Pro-Rata)", "⚖️ Honorários", "👶 Pensão", "🏠 Aluguel", "📊 Relatório PDF"])
@@ -358,6 +360,7 @@ with tab1:
     data_corte_selic = None
     data_citacao_ind = None
     cod_ind_escolhido = None
+    aplicar_juros_fase1 = True
     
     if "1. Índice" in regime_tipo:
         c_r1, c_r2 = st.columns(2)
@@ -371,6 +374,11 @@ with tab1:
         indice_sel_ind = c_mix1.selectbox("Índice Fase 1:", list(mapa_indices_completo.keys()))
         data_citacao_ind = c_mix2.date_input("Data Citação", value=inicio_atraso, format="DD/MM/YYYY")
         data_corte_selic = c_mix3.date_input("Data Início SELIC", value=date(2021, 12, 9), format="DD/MM/YYYY")
+        
+        # --- NOVO CONTROLE DE JUROS NA FASE 1 ---
+        aplicar_juros_fase1 = st.checkbox("Aplicar Juros de Mora (1% a.m.) na Fase 1?", value=True)
+        # ----------------------------------------
+        
         cod_ind_escolhido = mapa_indices_completo[indice_sel_ind]
         desc_regime_txt = f"Misto ({indice_sel_ind} -> SELIC)"
     else:
@@ -381,51 +389,38 @@ with tab1:
         st.session_state.params_relatorio = {
             'regime_desc': desc_regime_txt, 'tipo_regime': regime_tipo,
             'indice_nome': indice_sel_ind, 'data_corte': data_corte_selic,
-            'data_citacao': data_citacao_ind, 'data_calculo': data_calculo
+            'data_citacao': data_citacao_ind, 'data_calculo': data_calculo,
+            'juros_fase1': aplicar_juros_fase1
         }
 
         lista_resultados = []
         with st.status("Processando dados (Pro-Rata)...", expanded=True) as status:
             
-            # --- NOVA LÓGICA DE DATAS (PRO-RATA) ---
+            # --- LÓGICA DE DATAS (PRO-RATA) ---
             datas_calc = []
             curr = inicio_atraso
-            
-            # Navega mês a mês até passar a data final
             while curr <= fim_atraso:
-                # Último dia deste mês
                 ultimo_dia_mes = calendar.monthrange(curr.year, curr.month)[1]
                 data_fim_mes = date(curr.year, curr.month, ultimo_dia_mes)
-                
-                # O período neste mês termina no fim do mês OU na data final do contrato?
                 data_encerramento_periodo = min(data_fim_mes, fim_atraso)
-                
-                # Cálculo de dias ativos neste mês
                 dias_ativos = (data_encerramento_periodo - curr).days + 1
                 dias_no_mes = ultimo_dia_mes
                 
-                # Verifica se é pro-rata
-                eh_pro_rata = False
                 valor_base_mes = val_mensal_cheio
                 txt_pro_rata = "Integral"
-
                 if dias_ativos < dias_no_mes:
-                    eh_pro_rata = True
                     fator_pro = Decimal(dias_ativos) / Decimal(dias_no_mes)
                     valor_base_mes = val_mensal_cheio * fator_pro
                     txt_pro_rata = f"Pro-rata ({dias_ativos}/{dias_no_mes} dias)"
 
                 datas_calc.append({
-                    "vencimento": curr, # Data de início da vigência naquele mês
+                    "vencimento": curr, 
                     "valor_base": valor_base_mes,
                     "info_prorata": txt_pro_rata
                 })
-                
-                # Avança para o dia 1 do próximo mês
                 curr = data_fim_mes + timedelta(days=1)
             
             # --- BAIXA DADOS DO BCB ---
-            # Define o range total necessário para API
             dt_minima_api = min([d['vencimento'] for d in datas_calc])
             
             df_indice_principal = pd.DataFrame()
@@ -460,7 +455,7 @@ with tab1:
 
                 total_final = Decimal('0.00')
 
-                # LÓGICA DE REGIMES (IGUAL ANTERIOR, MAS USANDO val_base JÁ PROPORCIONAL)
+                # 1. ÍNDICE PADRÃO
                 if "1. Índice" in regime_tipo:
                     if cod_ind_escolhido == -1:
                          fator = calc_tjsp.calcular_fator_composto(venc, data_calculo)
@@ -482,14 +477,17 @@ with tab1:
                             linha["Valor Juros"] = formatar_moeda(valor_juros)
                         total_final = v_corrigido + valor_juros
 
+                # 2. SELIC PURA
                 elif "2. Taxa SELIC" in regime_tipo:
                     fator_selic = calcular_fator_memoria(df_selic_cache, venc, data_calculo)
                     if fator_selic:
                         total_final = val_base * fator_selic
                         linha["Audit Fator SELIC"] = formatar_decimal_str(fator_selic)
                 
+                # 3. MISTO
                 elif "3. Misto" in regime_tipo:
                     if venc >= data_corte_selic:
+                        # Pós Corte: SELIC Pura
                         fator_selic = calcular_fator_memoria(df_selic_cache, venc, data_calculo)
                         if fator_selic:
                             total_final = val_base * fator_selic
@@ -497,6 +495,7 @@ with tab1:
                             linha["Principal Atualizado"] = formatar_moeda(total_final)
                             linha["Audit Juros %"] = "-"
                     else:
+                        # Fase 1
                         if cod_ind_escolhido == -1:
                              f_fase1 = calc_tjsp.calcular_fator_composto(venc, data_corte_selic)
                         else:
@@ -507,13 +506,19 @@ with tab1:
                             linha["Audit Fator CM"] = f"{f_fase1:.6f}"
                             linha["V. Corrigido Puro"] = formatar_moeda(v_corr_f1)
 
-                            dt_j_f1 = data_citacao_ind if venc < data_citacao_ind else venc
-                            if dt_j_f1 < data_corte_selic:
-                                dias_f1 = (data_corte_selic - dt_j_f1).days
-                                juros_f1 = v_corr_f1 * (Decimal('0.01')/Decimal('30') * Decimal(dias_f1))
-                                linha["Audit Juros %"] = formatar_moeda(juros_f1)
+                            # Juros (Congelados) - SOMENTE SE O CHECKBOX ESTIVER MARCADO
+                            juros_f1 = Decimal('0.00')
+                            
+                            if aplicar_juros_fase1: # <--- CONTROLE NOVO
+                                dt_j_f1 = data_citacao_ind if venc < data_citacao_ind else venc
+                                if dt_j_f1 < data_corte_selic:
+                                    dias_f1 = (data_corte_selic - dt_j_f1).days
+                                    juros_f1 = v_corr_f1 * (Decimal('0.01')/Decimal('30') * Decimal(dias_f1))
+                                    linha["Audit Juros %"] = formatar_moeda(juros_f1)
+                                else:
+                                    linha["Audit Juros %"] = "R$ 0,00"
                             else:
-                                juros_f1 = Decimal('0.00')
+                                linha["Audit Juros %"] = "N/A (Desativado)"
                             
                             total_fase1 = v_corr_f1 + juros_f1
                             linha["Subtotal F1"] = formatar_moeda(total_fase1)
@@ -547,7 +552,7 @@ with tab1:
         st.dataframe(df[cols_exibir], use_container_width=True, hide_index=True)
 
 with tab2:
-    # (Mantido igual - omitido para brevidade, usar do código anterior se necessário, ou manter o seu)
+    # (Mantido padrão)
     st.subheader("Honorários")
     c_h1, c_h2 = st.columns(2)
     val_hon = to_decimal(c_h1.number_input("Valor Honorários", value=1500.00))
@@ -570,7 +575,6 @@ with tab2:
 
 with tab3:
     st.subheader("Pensão Alimentícia")
-    # (Código padrão mantido)
     c_p1, c_p2, c_p3 = st.columns(3)
     p_val = to_decimal(c_p1.number_input("Valor Parcela", value=1000.00))
     p_ini = c_p2.date_input("Início", value=date(2023, 1, 1), format="DD/MM/YYYY")
