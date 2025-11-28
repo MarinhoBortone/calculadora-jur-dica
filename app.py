@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 import calendar
-import csv  # <--- NOVO: Import necessário para ler a tabela
+import csv
+import io  # <--- NOVO: Necessário para ler o arquivo da memória
 from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from fpdf import FPDF
@@ -14,7 +15,7 @@ from urllib3.util.retry import Retry
 getcontext().prec = 28
 DOIS_DECIMAIS = Decimal('0.01')
 
-st.set_page_config(page_title="CalcJus Pro 4.6 (TJSP Integrado)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="CalcJus Pro 4.7 (TJSP Integrado)", layout="wide", page_icon="⚖️")
 
 st.markdown("""
 <style>
@@ -25,8 +26,33 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚖️ CalcJus PRO 4.6 - Com Tabela TJSP")
-st.markdown("Cálculos Judiciais com Precisão Decimal, API BCB e Tabela Prática.")
+# ==============================================================================
+# INTERFACE SIDEBAR (MOVIDO PARA CIMA PARA CARREGAR O ARQUIVO ANTES DA CLASSE)
+# ==============================================================================
+st.sidebar.header("Parâmetros do Processo")
+data_calculo = st.sidebar.date_input("Data do Cálculo (Data Base)", value=date.today(), format="DD/MM/YYYY")
+
+st.sidebar.divider()
+st.sidebar.markdown("### 📂 Base de Dados (TJSP)")
+arquivo_tjsp_upload = st.sidebar.file_uploader("Atualizar Tabela TJSP (.csv)", type=["csv"])
+
+st.sidebar.divider()
+st.sidebar.markdown("### Penalidades Legais")
+aplicar_multa_523 = st.sidebar.checkbox("Multa 10% (Art. 523 CPC)", value=False)
+aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523 CPC)", value=False)
+
+st.sidebar.divider()
+with st.sidebar.expander("🛠️ Ferramentas Admin"):
+    if st.button("Limpar Cache de Índices"):
+        st.cache_data.clear()
+        st.rerun()
+    modo_simulacao = st.toggle("Simular Queda do BCB", value=False)
+    if modo_simulacao != "simular_erro_bcb" in st.session_state and st.session_state["simular_erro_bcb"]:
+         st.session_state["simular_erro_bcb"] = modo_simulacao
+         st.cache_data.clear()
+         st.rerun()
+    if "simular_erro_bcb" in st.session_state and st.session_state.simular_erro_bcb:
+        st.sidebar.error("ERRO BCB ATIVO")
 
 # --- 2. ESTADO DA SESSÃO ---
 state_vars = {
@@ -53,48 +79,64 @@ for var, default in state_vars.items():
     if var not in st.session_state:
         st.session_state[var] = default
 
-# --- NOVO: CLASSE PARA LER O CSV DO TJSP ---
+# --- NOVO: CLASSE APRIMORADA PARA LER CSV DO UPLOAD OU LOCAL ---
 class CalculadoraTJSP:
-    def __init__(self, arquivo_csv='tabela_tjsp.csv'):
+    def __init__(self, arquivo_prioritario=None, arquivo_padrao='tabela_tjsp.csv'):
         self.indices = {}
-        self.carregar_dados(arquivo_csv)
+        # Tenta carregar o upload primeiro, se não existir, tenta o local
+        if arquivo_prioritario is not None:
+            self.carregar_dados(arquivo_prioritario, eh_upload=True)
+        else:
+            self.carregar_dados(arquivo_padrao, eh_upload=False)
 
-    def carregar_dados(self, arquivo_csv):
+    def carregar_dados(self, arquivo, eh_upload=False):
         try:
-            with open(arquivo_csv, mode='r', encoding='utf-8') as file:
-                leitor = csv.DictReader(file)
+            leitor = None
+            if eh_upload:
+                # Lê bytes da memória e converte para string
+                arquivo.seek(0)
+                conteudo = arquivo.getvalue().decode('utf-8')
+                f = io.StringIO(conteudo)
+                leitor = csv.DictReader(f)
+            else:
+                # Lê arquivo do sistema de arquivos
+                try:
+                    with open(arquivo, mode='r', encoding='utf-8') as f:
+                        # Lemos tudo para memória para processar fora do context manager neste design simples
+                        conteudo = f.read()
+                    f_io = io.StringIO(conteudo)
+                    leitor = csv.DictReader(f_io)
+                except FileNotFoundError:
+                    # Falha silenciosa ou log se arquivo local não existir
+                    return 
+
+            if leitor:
                 for linha in leitor:
-                    if linha['fator']:
+                    if 'fator' in linha and linha['fator']:
                         self.indices[linha['mes_ano']] = float(linha['fator'])
-        except FileNotFoundError:
-            # Não vamos travar o app se o arquivo não existir, apenas avisar no log
-            print(f"AVISO: Arquivo {arquivo_csv} não encontrado. A função TJSP não funcionará.")
+                        
         except Exception as e:
-            print(f"Erro CSV: {e}")
+            print(f"Erro ao ler CSV TJSP: {e}")
 
     def obter_fator(self, data_obj):
-        # Recebe objeto date e formata para chave MM/YYYY
         chave = f"{data_obj.month:02d}/{data_obj.year}"
         return self.indices.get(chave)
 
     def calcular_fator_composto(self, data_venc, data_atualiz):
-        # Retorna o fator multiplicador direto (Indice Final / Indice Inicial)
         idx_base = self.obter_fator(data_venc)
         idx_final = self.obter_fator(data_atualiz)
         
         if not idx_base or not idx_final:
             return None
         
-        # Matemática da Tabela Prática: Valor * (Fator Data Atual / Fator Data Antiga)
         return Decimal(str(idx_final)) / Decimal(str(idx_base))
 
-# Instancia a calculadora TJSP globalmente
-calc_tjsp = CalculadoraTJSP()
+# Instancia a calculadora TJSP usando o arquivo do upload se existir
+calc_tjsp = CalculadoraTJSP(arquivo_prioritario=arquivo_tjsp_upload)
 
 # --- 3. FUNÇÕES UTILITÁRIAS ---
 
 def to_decimal(valor):
-    """Converte input para Decimal de forma BLINDADA."""
     if not valor: return Decimal('0.00')
     try:
         if isinstance(valor, (float, int, Decimal)):
@@ -120,13 +162,11 @@ def formatar_moeda(valor):
 def formatar_decimal_str(valor):
     return f"{valor:.6f}"
 
-# --- 4. CONEXÃO BCB OTIMIZADA (DATAFRAME CACHE) ---
+# --- 4. CONEXÃO BCB OTIMIZADA ---
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
-    """Baixa a série inteira e retorna um DataFrame pronto para cálculo."""
     if st.session_state.simular_erro_bcb: return None
-    # Se for código -1 (TJSP), não busca no BCB
     if codigo_serie == -1: return pd.DataFrame()
 
     if data_fim <= data_inicio or data_inicio > date.today():
@@ -161,7 +201,6 @@ def obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim):
         return pd.DataFrame()
 
 def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
-    """Calcula o produto acumulado filtrando o DataFrame localmente."""
     if df_serie is None or df_serie.empty: return None
     
     mask = (df_serie['data_dt'] >= dt_ini) & (df_serie['data_dt'] <= dt_fim)
@@ -175,8 +214,7 @@ def calcular_fator_memoria(df_serie, dt_ini, dt_fim):
     return fator
 
 def buscar_fator_bcb(codigo_serie, data_inicio, data_fim):
-    # Wrapper modificado para aceitar TJSP
-    if codigo_serie == -1: # Código interno para TJSP
+    if codigo_serie == -1: 
         return calc_tjsp.calcular_fator_composto(data_inicio, data_fim)
         
     df = obter_dados_bcb_cache(codigo_serie, data_inicio, data_fim)
@@ -202,6 +240,7 @@ class PDFRelatorio(FPDF):
 
     def safe_cell(self, w, h, txt, border=0, ln=0, align='', fill=False):
         try:
+            # Proteção aprimorada para caracteres especiais
             txt_safe = str(txt).encode('latin-1', 'replace').decode('latin-1')
             self.cell(w, h, txt_safe, border, ln, align, fill)
         except:
@@ -383,7 +422,7 @@ def gerar_pdf_relatorio(dados_ind, dados_hon, dados_pen, dados_aluguel, totais, 
 
 # --- 6. DADOS ESTÁTICOS ---
 mapa_indices_completo = {
-    "Tabela Prática TJSP (Oficial)": -1, # <--- CÓDIGO ESPECIAL -1 PARA O SISTEMA SABER QUE É CSV
+    "Tabela Prática TJSP (Oficial)": -1,
     "INPC (IBGE) - 188": 188, 
     "IGP-M (FGV) - 189": 189, 
     "IPCA (IBGE) - 433": 433,
@@ -396,32 +435,11 @@ mapa_indices_completo = {
 COD_SELIC = 4390
 
 # ==============================================================================
-# INTERFACE SIDEBAR
-# ==============================================================================
-st.sidebar.header("Parâmetros do Processo")
-data_calculo = st.sidebar.date_input("Data do Cálculo (Data Base)", value=date.today(), format="DD/MM/YYYY")
-
-st.sidebar.divider()
-st.sidebar.markdown("### Penalidades Legais")
-aplicar_multa_523 = st.sidebar.checkbox("Multa 10% (Art. 523 CPC)", value=False)
-aplicar_hon_523 = st.sidebar.checkbox("Honorários 10% (Art. 523 CPC)", value=False)
-
-st.sidebar.divider()
-with st.sidebar.expander("🛠️ Ferramentas Admin"):
-    if st.button("Limpar Cache de Índices"):
-        st.cache_data.clear()
-        st.rerun()
-    modo_simulacao = st.toggle("Simular Queda do BCB", value=False)
-    if modo_simulacao != st.session_state.simular_erro_bcb:
-        st.session_state.simular_erro_bcb = modo_simulacao
-        st.cache_data.clear()
-        st.rerun()
-    if st.session_state.simular_erro_bcb:
-        st.sidebar.error("ERRO BCB ATIVO")
-
-# ==============================================================================
 # NAVEGAÇÃO
 # ==============================================================================
+st.title("⚖️ CalcJus PRO 4.7 - Com Tabela TJSP")
+st.markdown("Cálculos Judiciais com Precisão Decimal, API BCB e Tabela Prática.")
+
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏢 Indenização/Cível", "⚖️ Honorários", "👶 Pensão Alimentícia", "🏠 Aluguel", "📊 Relatório PDF"])
 
 with tab1:
@@ -494,7 +512,6 @@ with tab1:
             dt_minima_api = min(datas_vencimento)
             
             df_indice_principal = pd.DataFrame()
-            # Se for TJSP (-1), não baixa nada do BCB para o índice principal
             if cod_ind_escolhido and cod_ind_escolhido != -1:
                 status.write(f"Baixando série histórica {indice_sel_ind}...")
                 df_indice_principal = obter_dados_bcb_cache(cod_ind_escolhido, dt_minima_api, data_calculo)
@@ -516,7 +533,8 @@ with tab1:
                     "Audit Fator CM": "-", "V. Corrigido Puro": "-",
                     "Audit Juros %": "-", "Valor Juros": "-", "Subtotal F1": "-",
                     "Audit Fator SELIC": "-", "Principal Atualizado": "-", "TOTAL": "-",
-                    "_num": Decimal('0.00')
+                    "_num": Decimal('0.00'),
+                    "data_sort": venc
                 }
 
                 total_final = Decimal('0.00')
@@ -604,8 +622,17 @@ with tab1:
         st.session_state.total_indenizacao = df["_num"].sum()
         
         st.success(f"Total: {formatar_moeda(st.session_state.total_indenizacao)}")
-        # Remove colunas internas e formata para exibição
-        cols_exibir = [c for c in df.columns if c != "_num"]
+        
+        # --- NOVO: VISUALIZAÇÃO GRÁFICA ---
+        if not df.empty:
+            chart_data = df[['data_sort', '_num']].copy()
+            chart_data = chart_data.rename(columns={'data_sort': 'Vencimento', '_num': 'Valor Atualizado'})
+            # Converte decimal para float apenas para o gráfico
+            chart_data['Valor Atualizado'] = chart_data['Valor Atualizado'].astype(float)
+            st.markdown("#### 📈 Evolução dos Valores")
+            st.area_chart(chart_data.set_index('Vencimento'))
+
+        cols_exibir = [c for c in df.columns if c not in ["_num", "data_sort"]]
         st.dataframe(df[cols_exibir], use_container_width=True, hide_index=True)
 
 with tab2:
